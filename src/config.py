@@ -136,6 +136,17 @@ NORM_MEAN = (0.485, 0.456, 0.406)
 NORM_STD = (0.229, 0.224, 0.225)
 
 # ---------------------------------------------------------------
+# VERI ARTIRMA (PLAN Bolum 7.2) -- 19 etkin ornekle ZORUNLU
+# ---------------------------------------------------------------
+# YATAY/DIKEY CEVIRME YOK: spektrogramda zaman veya frekans eksenini ters
+# cevirmek fiziksel olarak anlamsizdir (bkz. PLAN 7.2).
+CROP_SCALE = (0.85, 1.0)    # RandomResizedCrop alan orani
+JITTER = 0.10               # parlaklik/kontrast +-%10
+MASK_MAX_FRAC = 0.10        # serit genisligi/yuksekligi <= eksenin %10'u
+MASK_N = (1, 2)             # serit sayisi araligi
+MASK_P = 0.5                # her eksen icin maskeleme uygulama olasiligi
+
+# ---------------------------------------------------------------
 # DEGERLENDIRME (PLAN Bolum 8.3)
 # ---------------------------------------------------------------
 SNR_BUCKETS = [("dusuk", 0, 5), ("orta", 5, 10), ("yuksek", 10, 16)]
