@@ -37,6 +37,7 @@ Kullanim (kendi kendine test + artirma onizlemesi):
 """
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -51,6 +52,35 @@ import config as cfg
 # ---------------------------------------------------------------
 # ONBELLEK
 # ---------------------------------------------------------------
+def resolve_path(row):
+    """
+    metadata.csv satirindan gercek dosya yolunu cozer.
+
+    filepath sutunu repo koku'ne GORELI tutulur (orn.
+    'synthetic_dataset/fence_cutting/x_spectrogram.png') -- boylece ayni CSV
+    hem Windows'ta hem Colab'da calisir.
+
+    Geriye donuk uyum: eski CSV'lerde mutlak Windows yolu olabilir. O durumda
+    label + filename sutunlarindan yeniden kurariz; bu ikisi platformdan
+    bagimsizdir.
+    """
+    p = Path(str(row.filepath))
+    if not p.is_absolute():
+        p = cfg.ROOT / p
+    if p.exists():
+        return p
+    fallback = cfg.DATA_DIR / row.label / row.filename
+    if fallback.exists():
+        return fallback
+    raise FileNotFoundError(
+        f"Spektrogram bulunamadi: {row.filename}\n"
+        f"  denenen: {p}\n"
+        f"  denenen: {fallback}\n"
+        f"metadata.csv baska bir makinede uretilmis olabilir -- "
+        f"'python src/metadata.py' ile yeniden uret."
+    )
+
+
 def build_cache(df, verbose=True):
     """
     Tum spektrogramlari tek bir uint8 dizisine ac: (N, 400, 400, 3).
@@ -65,11 +95,11 @@ def build_cache(df, verbose=True):
     if verbose:
         print(f"  {n} PNG onbellege aliniyor ({n * h * w * 3 / 1e6:.0f} MB)...",
               flush=True)
-    for i, fp in enumerate(df.filepath):
-        with Image.open(fp) as im:
+    for i, row in enumerate(df.itertuples(index=False)):
+        with Image.open(resolve_path(row)) as im:
             arr = np.asarray(im.convert("RGB"))
         if arr.shape != (h, w, 3):
-            raise ValueError(f"beklenmeyen boyut {arr.shape}: {fp}")
+            raise ValueError(f"beklenmeyen boyut {arr.shape}: {row.filename}")
         cache[i] = arr
     if verbose:
         print(f"  onbellek hazir: {cache.shape} {cache.dtype}", flush=True)

@@ -151,7 +151,10 @@ def parse_filename(png_path, label, known):
     groups = sorted({g for g in (grp1, grp2) if g is not None})
 
     return {
-        "filepath": str(png_path),
+        # Repo koku'ne GORELI, POSIX ayracli yol.
+        # Mutlak yol YAZILMAZ: metadata.csv repoya commit'leniyor ve Colab'da
+        # okunuyor; 'C:\\Users\\...' gibi bir yol orada FileNotFoundError verir.
+        "filepath": png_path.relative_to(cfg.ROOT).as_posix(),
         "filename": png_path.name,
         "label": label,
         "label_idx": cfg.LABEL_TO_IDX[label],
