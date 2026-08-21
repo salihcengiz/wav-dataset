@@ -103,9 +103,34 @@ VAL_FRACTION = 0.15
 # ---------------------------------------------------------------
 # MODEL (PLAN Bolum 6)
 # ---------------------------------------------------------------
-INPUT_SIZE = 224            # 400x400 PNG -> 224x224
+# ---------------------------------------------------------------
+# GIRDI BOYUTU -- PAKET 2 / C1
+# ---------------------------------------------------------------
+# Spektrogramin GERCEK bilgi icerigi:
+#     10 s x 2000 Hz = 20.000 ornek, STFT n_fft=256 hop=64
+#     -> 129 frekans bini x 313 zaman cercevesi
+#
+# Ilk uygulamada 224x224 kullaniliyordu (PLAN 7.1). Frekans tarafinda sorun
+# yok (129 -> 224, bol bol yer var) ama ZAMAN tarafinda 313 cerceveyi 224
+# piksele sikistiriyorduk -- gercek cozunurlugun %28 altina iniyorduk.
+#
+# Olaylari ayiran sey buyuk olcude ZAMANLAMA orintusu (orn. metal_bending'in
+# uc ayri parlak darbesi ve aralarindaki bosluklar), o yuzden zaman eksenine
+# 320 piksel veriyoruz. Model AdaptiveAvgPool kullandigi icin mimari
+# degisikligi gerekmiyor; omurga cikisi (64, 28, 28) yerine (64, 28, 40) olur.
+INPUT_H = 224               # dikey = FREKANS  (129 bin -> 224, kayipsiz)
+INPUT_W = 320               # yatay = ZAMAN    (313 cerceve -> 320, kayipsiz)
+INPUT_SIZE = (INPUT_H, INPUT_W)
+
 IN_CHANNELS = 3             # viridis RGB
 CONV_CHANNELS = (16, 32, 64)
+
+# PAKET 2 / B1: omurgada BatchNorm.
+# PLAN 6.1 blogu harfiyen "Conv + ReLU + MaxPool" diyordu ve ilk uygulamada
+# BN yoktu (karar K2). Baseline katman 2'de val_loss 1.30'dan 3.48'e firladi --
+# normalizasyonsuz egitimin klasik kararsizligi. BN hem stabilize eder hem
+# batch istatistikleri uzerinden hafif duzenlilestirme saglar.
+BACKBONE_BATCHNORM = True
 SK_M = 2                    # dal sayisi
 SK_KERNELS = (3, 5)         # ablasyonda en iyi ikili
 SK_R = 16                   # sikistirma orani
@@ -130,6 +155,15 @@ MAX_EPOCHS = 100
 EARLY_STOP_PATIENCE = 10
 LR_PATIENCE = 5
 LR_FACTOR = 0.5
+
+# PAKET 2 / B2: label smoothing.
+# Kanit: test kayiplari 1.26-2.03 iken dogruluk ~0.60 -- model EMIN BIR SEKILDE
+# yanlis. Label smoothing hedefi [1,0,0] yerine [0.9,0.05,0.05] yapar, boylece
+# model olasiliklari 1.0'a itemez ve asiri guven cezalanir.
+# NOT: bu, kayip DEGERINI degistirir (sifira inemez), dolayisiyla val_loss
+# rakamlari onceki kosularla karsilastirilamaz. Model secimi macro-F1'e bagli
+# oldugu icin (PAKET 1 / A1) secimi etkilemez.
+LABEL_SMOOTHING = 0.1
 
 # ImageNet istatistikleri (PLAN 7.1)
 NORM_MEAN = (0.485, 0.456, 0.406)

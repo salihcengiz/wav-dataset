@@ -6,13 +6,13 @@ Journal 25(22)) uyarlanmistir: makalenin girdisi (B,1,4000,10) zaman-uzay
 matrisiydi, bizimki spektrogram goruntusu. Omurga ayni, sadece girdi kanali
 ve boyutu degisti.
 
-    Girdi (B,3,224,224)
-      -> Conv(3->16,3x3) + ReLU + MaxPool2  -> (B,16,112,112)
-      -> Conv(16->32,3x3) + ReLU + MaxPool2 -> (B,32,56,56)
-      -> Conv(32->64,3x3) + ReLU + MaxPool2 -> (B,64,28,28)
-      -> Dikkat modulu (SK / SE / CBAM / yok) -> (B,64,28,28)
-      -> AdaptiveAvgPool2d(1) -> Flatten     -> (B,64)      [t-SNE ozelligi]
-      -> Dropout(0.5) -> Linear(64->3)       -> (B,3)       [logit]
+    Girdi (B,3,224,320)                     [dikey=FREKANS, yatay=ZAMAN]
+      -> Conv(3->16,3x3) +BN+ ReLU + MaxPool2  -> (B,16,112,160)
+      -> Conv(16->32,3x3) +BN+ ReLU + MaxPool2 -> (B,32,56,80)
+      -> Conv(32->64,3x3) +BN+ ReLU + MaxPool2 -> (B,64,28,40)
+      -> Dikkat modulu (SK / SE / CBAM / yok)  -> (B,64,28,40)
+      -> AdaptiveAvgPool2d(1) -> Flatten       -> (B,64)    [t-SNE ozelligi]
+      -> Dropout(0.5) -> Linear(64->3)         -> (B,3)     [logit]
 
 PLANDA BELIRTILMEYEN, BURADA VERILEN KARARLAR
 ---------------------------------------------
@@ -184,18 +184,25 @@ class DASNet(nn.Module):
 
     def __init__(self, n_classes=cfg.N_CLASSES, in_channels=cfg.IN_CHANNELS,
                  channels=cfg.CONV_CHANNELS, attention="sk",
-                 dropout=cfg.DROPOUT):
+                 dropout=cfg.DROPOUT, batchnorm=cfg.BACKBONE_BATCHNORM):
         super().__init__()
         if attention not in ATTENTIONS:
             raise ValueError(f"bilinmeyen dikkat modulu: {attention!r} "
                              f"(secenekler: {sorted(ATTENTIONS)})")
         self.attention_name = attention
+        self.batchnorm = batchnorm
 
-        # PLAN 6.1: Conv + ReLU + MaxPool x3. Omurgada BatchNorm YOK (bkz. modul basi).
+        # PLAN 6.1: Conv + ReLU + MaxPool x3.
+        # PAKET 2 / B1: araya BatchNorm2d eklendi (batchnorm=False ile eski
+        # plan-harfi davranisa donulebilir -- ablasyon icin).
+        # BN kendi kaydirma terimini tasidigi icin conv bias'i gereksiz.
         blocks, c_in = [], in_channels
         for c_out in channels:
+            blocks.append(nn.Conv2d(c_in, c_out, kernel_size=3, stride=1,
+                                    padding=1, bias=not batchnorm))
+            if batchnorm:
+                blocks.append(nn.BatchNorm2d(c_out))
             blocks += [
-                nn.Conv2d(c_in, c_out, kernel_size=3, stride=1, padding=1),
                 nn.ReLU(inplace=True),
                 nn.MaxPool2d(kernel_size=2, stride=2),
             ]
@@ -281,9 +288,10 @@ def self_test():
     print(f"  [x] Agirliklar kanal basina farklilasiyor (dinamik secim aktif)")
 
     # === 2) Tam model, ileri gecis ===
-    print(f"\n[2] Tam model ileri gecisi -- girdi (2, 3, 224, 224)")
+    print(f"\n[2] Tam model ileri gecisi -- girdi "
+          f"(2, {cfg.IN_CHANNELS}, {cfg.INPUT_H}, {cfg.INPUT_W})")
     print(line)
-    img = torch.randn(2, cfg.IN_CHANNELS, cfg.INPUT_SIZE, cfg.INPUT_SIZE)
+    img = torch.randn(2, cfg.IN_CHANNELS, cfg.INPUT_H, cfg.INPUT_W)
     for name in ["none", "sk", "se", "cbam"]:
         m = DASNet(attention=name).eval()
         with torch.no_grad():
@@ -305,16 +313,18 @@ def self_test():
     m = DASNet(attention="sk").eval()
     h = img
     print(f"  {'girdi':<28} {tuple(h.shape)}")
+    n_block = 0
     with torch.no_grad():
-        for i, layer in enumerate(m.features):
+        for layer in m.features:
             h = layer(h)
             if isinstance(layer, nn.MaxPool2d):
-                print(f"  {'blok ' + str(i // 3 + 1) + ' sonrasi':<28} {tuple(h.shape)}")
-        expected = (2, 64, 28, 28)
+                n_block += 1
+                print(f"  {'blok ' + str(n_block) + ' sonrasi':<28} {tuple(h.shape)}")
+        # Uc havuzlama -> her eksen 8'e bolunur
+        expected = (2, cfg.CONV_CHANNELS[-1], cfg.INPUT_H // 8, cfg.INPUT_W // 8)
         _check(tuple(h.shape) == expected,
-               f"omurga cikti sekli {tuple(h.shape)}, {expected} bekleniyordu "
-               f"(PLAN 6.1 blogu)")
-        print(f"  {'-> SK modulune giren':<28} {tuple(h.shape)}   PLAN 6.1 ile uyumlu")
+               f"omurga cikti sekli {tuple(h.shape)}, {expected} bekleniyordu")
+        print(f"  {'-> SK modulune giren':<28} {tuple(h.shape)}")
 
     # === 4) Parametre butcesi ===
     print(f"\n[4] Parametre sayisi")

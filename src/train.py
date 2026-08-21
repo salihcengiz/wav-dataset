@@ -183,7 +183,8 @@ def plot_curves(history, path, title):
 
 def train_fold(fold_idx, attention, df, cache, device, max_epochs,
                batch_size=cfg.BATCH_SIZE, patience=cfg.EARLY_STOP_PATIENCE,
-               monitor="macro_f1", verbose=True):
+               monitor="macro_f1", batchnorm=cfg.BACKBONE_BATCHNORM,
+               label_smoothing=cfg.LABEL_SMOOTHING, verbose=True):
     """Tek bir katmani sifirdan egitir. Donen: history sozlugu."""
     # PLAN 7.5: tohum her katmanda AYNI -- katman varyansi veriden gelsin
     set_deterministic(cfg.SEED)
@@ -193,8 +194,10 @@ def train_fold(fold_idx, attention, df, cache, device, max_epochs,
     (tr, va, te), fold, df, cache = make_loaders(
         fold_idx, df=df, cache=cache, batch_size=batch_size, verbose=False)
 
-    model = DASNet(attention=attention).to(device)
-    criterion = nn.CrossEntropyLoss()          # PLAN 7.3: siniflar dengeli, agirlik yok
+    model = DASNet(attention=attention, batchnorm=batchnorm).to(device)
+    # PLAN 7.3: siniflar dengeli, agirlik yok.
+    # PAKET 2 / B2: label smoothing -- "emin ve yanlis" tahminleri cezalandirir.
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.LR,
                                  weight_decay=cfg.WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -208,6 +211,8 @@ def train_fold(fold_idx, attention, df, cache, device, max_epochs,
               f"| test {len(te.dataset):>4} | atilan mixup {fold['n_dropped_mixup']}")
         print(f"  parametre {count_parameters(model):,} | batch {batch_size} "
               f"| maks epoch {max_epochs} | erken durdurma sabri {patience}")
+        print(f"  girdi {cfg.INPUT_H}x{cfg.INPUT_W} | BatchNorm "
+              f"{'acik' if batchnorm else 'KAPALI'} | label smoothing {label_smoothing}")
         print(f"  izlenen metrik: {mon_key} "
               f"({'buyugu' if mon_higher_better else 'kucugu'} iyi)")
         print(f"  {'ep':>4} {'lr':>9} {'tr_loss':>9} {'tr_acc':>8} "
@@ -321,6 +326,9 @@ def main():
     ap.add_argument("--monitor", default="macro_f1", choices=list(MONITORS),
                     help="erken durdurma/checkpoint neyi izlesin "
                          "(varsayilan macro_f1; 'loss' eski davranis)")
+    ap.add_argument("--no-batchnorm", action="store_true",
+                    help="omurgadaki BatchNorm'u kapat (PLAN 6.1 harfi, ablasyon)")
+    ap.add_argument("--label-smoothing", type=float, default=cfg.LABEL_SMOOTHING)
     ap.add_argument("--device", default=None, help="cuda / cpu (varsayilan: otomatik)")
     args = ap.parse_args()
 
@@ -328,10 +336,15 @@ def main():
     device = get_device(args.device)
     folds = list(range(cfg.N_SPLITS)) if args.fold == "all" else [int(args.fold)]
 
+    batchnorm = not args.no_batchnorm
     print("=" * 78)
     print(f"FAZ 3 -- EGITIM  |  dikkat={args.attention}  |  cihaz={device}")
     print(f"  izlenen metrik : {MONITORS[args.monitor][0]}   (PAKET 1 / A1)")
     print(f"  determinizm    : acik   (PAKET 1 / A3)")
+    print(f"  BatchNorm      : {'acik' if batchnorm else 'KAPALI'}   (PAKET 2 / B1)")
+    print(f"  label smoothing: {args.label_smoothing}   (PAKET 2 / B2)")
+    print(f"  girdi boyutu   : {cfg.INPUT_H}x{cfg.INPUT_W} "
+          f"(frekans x zaman)   (PAKET 2 / C1)")
     print("=" * 78)
     if device.type == "cpu":
         print("  NOT: CPU'da calisiyor. Tam egitim icin GPU (Colab) onerilir.")
@@ -345,7 +358,9 @@ def main():
                                   max_epochs=args.epochs,
                                   batch_size=args.batch_size,
                                   patience=args.patience,
-                                  monitor=args.monitor))
+                                  monitor=args.monitor,
+                                  batchnorm=batchnorm,
+                                  label_smoothing=args.label_smoothing))
 
     if len(results) > 1:
         print(f"\n{'=' * 78}")

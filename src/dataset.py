@@ -153,20 +153,27 @@ class SpecMasking(torch.nn.Module):
 # DONUSUMLER (PLAN 7.1 / 7.2)
 # ---------------------------------------------------------------
 def build_transforms(train):
-    """train=True -> PLAN 7.2 artirmalari; train=False -> sadece PLAN 7.1."""
+    """
+    train=True -> PLAN 7.2 artirmalari; train=False -> sadece PLAN 7.1.
+
+    Hedef boyut (INPUT_H, INPUT_W) = (224, 320) -- dikey frekans, yatay zaman
+    (PAKET 2 / C1, bkz. config.py). Kaynak PNG kare (400x400) oldugu icin
+    kirpma da KARE aliniyor (ratio=1.0) ve sonra hedefe esnetiliyor; boylece
+    egitim ve degerlendirme ayni geometrik donusumu goruyor.
+    """
     norm = v2.Normalize(mean=cfg.NORM_MEAN, std=cfg.NORM_STD)
     to_float = v2.ToDtype(torch.float32, scale=True)     # uint8 -> [0,1]
 
     if not train:
         return v2.Compose([
-            v2.Resize((cfg.INPUT_SIZE, cfg.INPUT_SIZE), antialias=True),
+            v2.Resize((cfg.INPUT_H, cfg.INPUT_W), antialias=True),
             to_float,
             norm,
         ])
 
     return v2.Compose([
         # NOT: yatay/dikey cevirme YOK -- spektrogramda fiziksel olarak anlamsiz
-        v2.RandomResizedCrop(cfg.INPUT_SIZE, scale=cfg.CROP_SCALE,
+        v2.RandomResizedCrop((cfg.INPUT_H, cfg.INPUT_W), scale=cfg.CROP_SCALE,
                              ratio=(1.0, 1.0), antialias=True),
         v2.ColorJitter(brightness=cfg.JITTER, contrast=cfg.JITTER),
         to_float,
@@ -328,7 +335,7 @@ def self_test():
         x, y = next(iter(dl))
         print(f"  {name:<11} x={tuple(x.shape)} {x.dtype}  "
               f"[{x.min():.2f}, {x.max():.2f}]   y={tuple(y.shape)} {y.dtype}")
-        assert x.shape[1:] == (3, cfg.INPUT_SIZE, cfg.INPUT_SIZE), \
+        assert x.shape[1:] == (3, cfg.INPUT_H, cfg.INPUT_W), \
             f"{name}: beklenmeyen girdi sekli {tuple(x.shape)}"
         assert y.min() >= 0 and y.max() < cfg.N_CLASSES, f"{name}: etiket araligi bozuk"
 
@@ -354,7 +361,7 @@ def self_test():
     print("-" * 74)
     torch.manual_seed(0)
     m = SpecMasking(max_frac=cfg.MASK_MAX_FRAC, n_masks=cfg.MASK_N, p=1.0)
-    probe = torch.ones(3, 224, 224)
+    probe = torch.ones(3, cfg.INPUT_H, cfg.INPUT_W)
     out = m(probe.clone())
     zero_frac = (out == 0).float().mean().item()
     print(f"  maskelenen piksel orani: {zero_frac:.1%} "
