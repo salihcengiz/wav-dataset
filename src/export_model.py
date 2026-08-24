@@ -336,9 +336,123 @@ def write_model_card(bundle, path, filename):
     ), encoding="utf-8")
 
 
+def verify_bundle(path):
+    """
+    Disa aktarilmis bir paketi bastan sona sina.
+
+    Paketi teslim alan kisi bunu calistirarak dosyanin saglam ve kullanilabilir
+    oldugunu dogrulayabilir -- kodun geri kalanina bakmadan.
+    """
+    from model import load_pretrained
+
+    print("=" * 74)
+    print(f"PAKET DOGRULAMA  |  {path}")
+    print("=" * 74)
+    b = torch.load(path, map_location="cpu", weights_only=False)
+    arch, inp = b["architecture"], b["input"]
+    cv = b.get("cv_performance") or {}
+
+    print(f"\n[1] Kimlik")
+    print("-" * 74)
+    print(f"  uretim      : {b['created_utc'][:19].replace('T', ' ')} UTC")
+    print(f"  kod surumu  : {(b.get('git_commit') or 'bilinmiyor')[:12]}")
+    print(f"  torch       : {b.get('torch_version')}")
+    print(f"  mimari      : {arch['class']} / dikkat={arch['attention']} / "
+          f"{arch['n_parameters']:,} parametre")
+    print(f"  girdi       : {inp['height']}x{inp['width']}, "
+          f"{arch['in_channels']} kanal ({inp['layout']})")
+    print(f"  siniflar    : {b['classes']}")
+    print(f"  egitim      : {b['training']['n_samples']} ornek, "
+          f"{b['training']['epochs']} epoch, "
+          f"{b['training']['n_effective_recordings']} bagimsiz kayit")
+    if cv:
+        print(f"  CV tahmini  : macro-F1 {cv['macro_f1_mean']} "
+              f"+- {cv['macro_f1_std']}  ({cv['n_folds']} katman)")
+    else:
+        print(f"  CV tahmini  : YOK")
+
+    x = torch.randn(2, arch["in_channels"], inp["height"], inp["width"])
+
+    print(f"\n[2] Ayni sinif sayisiyla yukleme")
+    print("-" * 74)
+    m = DASNet(attention=arch["attention"], n_classes=arch["n_classes"],
+               batchnorm=arch["batchnorm"])
+    m.load_state_dict(b["state_dict"])
+    m.eval()
+    with torch.no_grad():
+        out = m(x)
+    assert out.shape == (2, arch["n_classes"]), f"cikti sekli {tuple(out.shape)}"
+    assert torch.isfinite(out).all(), "ciktida NaN/Inf"
+    print(f"  cikti {tuple(out.shape)}   [x] tam yukleme calisiyor")
+
+    print(f"\n[3] Agirliklar gercekten aktarildi mi")
+    print("-" * 74)
+    fresh = DASNet(attention=arch["attention"], n_classes=arch["n_classes"],
+                   batchnorm=arch["batchnorm"])
+    k0 = "features.0.weight"
+    assert not torch.equal(fresh.state_dict()[k0], m.state_dict()[k0]), \
+        "yuklenen agirlik rastgele baslangicla ayni -- yukleme calismamis"
+    assert torch.equal(b["state_dict"][k0], m.state_dict()[k0]), \
+        "paketteki agirlik ile modeldeki farkli"
+    print(f"  [x] {k0} paketten geldi, rastgele degil")
+
+    print(f"\n[4] Transfer ogrenme (farkli sinif sayisi)")
+    print("-" * 74)
+    new_n = arch["n_classes"] + 2
+    m2 = DASNet(attention=arch["attention"], n_classes=new_n,
+                batchnorm=arch["batchnorm"])
+    loaded, skipped = load_pretrained(m2, b, verbose=False)
+    with torch.no_grad():
+        out2 = m2(x)
+    assert out2.shape == (2, new_n)
+    assert all("classifier" in k for k, _ in skipped), \
+        f"omurgadan tensor atlanmis: {skipped}"
+    print(f"  {arch['n_classes']} -> {new_n} sinif: {len(loaded)} tensor yuklendi, "
+          f"{len(skipped)} atlandi")
+    for k, reason in skipped:
+        print(f"     atlanan: {k}  ({reason})")
+    print(f"  cikti {tuple(out2.shape)}   [x] omurga + dikkat aktarildi")
+
+    print(f"\n[5] Omurgayi dondurma")
+    print("-" * 74)
+    m3 = DASNet(attention=arch["attention"], n_classes=new_n,
+                batchnorm=arch["batchnorm"])
+    load_pretrained(m3, b, freeze_backbone=True, verbose=False)
+    trainable = [n for n, p in m3.named_parameters() if p.requires_grad]
+    assert all("classifier" in n for n in trainable), \
+        f"omurga hala egitilebilir: {trainable}"
+    print(f"  egitilebilir kalan: {trainable}   [x] dondurma calisiyor")
+
+    print(f"\n[6] Ozellik cikarici (transfer / t-SNE icin)")
+    print("-" * 74)
+    with torch.no_grad():
+        f = m.forward_features(x)
+    assert f.shape == (2, arch["feature_dim"])
+    print(f"  ozellik vektoru {tuple(f.shape)}   [x] forward_features calisiyor")
+
+    print(f"\n[7] On isleme tanimi pakette var mi")
+    print("-" * 74)
+    for k in ("norm_mean", "norm_std", "height", "width"):
+        assert k in inp, f"'{k}' eksik"
+    print(f"  Resize(({inp['height']}, {inp['width']}))")
+    print(f"  Normalize(mean={inp['norm_mean']}, std={inp['norm_std']})")
+    print(f"  [x] Paketi alan kisi on islemeyi yeniden kurabilir")
+
+    print(f"\n[8] Sinirlamalar pakette kayitli")
+    print("-" * 74)
+    for c in b["caveats"]:
+        print(f"  - {c}")
+
+    print(f"\n{'=' * 74}")
+    print("PAKET SAGLAM VE KULLANIMA HAZIR.")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Nihai modeli tum veriyle egit ve disa aktar")
+    ap.add_argument("--verify", metavar="PATH", default=None,
+                    help="egitim yapma; verilen paketi sina ve cik")
     ap.add_argument("--attention", default="sk",
                     choices=["sk", "none", "se", "cbam"])
     ap.add_argument("--epochs", type=int, default=None,
@@ -346,6 +460,9 @@ def main():
     ap.add_argument("--batch-size", type=int, default=cfg.BATCH_SIZE)
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
+
+    if args.verify:
+        return verify_bundle(args.verify)
 
     cfg.ensure_dirs()
     out_dir = cfg.OUT_DIR / "pretrained"
