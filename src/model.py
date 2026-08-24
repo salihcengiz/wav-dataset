@@ -235,6 +235,67 @@ def count_parameters(model):
 
 
 # ---------------------------------------------------------------
+# TRANSFER OGRENME YARDIMCISI
+# ---------------------------------------------------------------
+def load_pretrained(model, bundle, freeze_backbone=False, verbose=True):
+    """
+    Onceden egitilmis agirliklari `model`e yukler; SEKLI UYMAYAN tensorleri atlar.
+
+    Neden ayri bir fonksiyon gerekiyor:
+        load_state_dict(..., strict=False) yalnizca EKSIK ve FAZLA anahtarlari
+        tolere eder. Sekil uyusmazliginda yine RuntimeError firlatir. Gercek
+        veride sinif sayisi degisince (orn. 3 -> 5) 'classifier' katmani tam
+        da bu hataya girer. Bu fonksiyon o tensorleri atlayip omurgayi yukler.
+
+    Parametreler
+    ------------
+    bundle : dict | str | Path
+        export_model.py'nin urettigi paket, ya da .pt dosyasinin yolu.
+    freeze_backbone : bool
+        True ise yuklenen katmanlarin gradyani kapatilir -- cok az saha
+        verisi varken yalnizca sinif katmanini egitmek icin.
+
+    Donen
+    -----
+    (yuklenen_anahtarlar, atlanan_anahtarlar)
+    """
+    from pathlib import Path
+
+    if isinstance(bundle, (str, Path)):
+        bundle = torch.load(bundle, map_location="cpu", weights_only=False)
+    src = bundle["state_dict"] if "state_dict" in bundle else bundle
+
+    own = model.state_dict()
+    keep, skipped = {}, []
+    for k, v in src.items():
+        if k in own and own[k].shape == v.shape:
+            keep[k] = v
+        else:
+            reason = "yok" if k not in own else f"sekil {tuple(v.shape)} != {tuple(own[k].shape)}"
+            skipped.append((k, reason))
+
+    model.load_state_dict(keep, strict=False)
+
+    if freeze_backbone:
+        for name, p in model.named_parameters():
+            if name in keep:
+                p.requires_grad = False
+
+    if verbose:
+        print(f"  yuklenen tensor : {len(keep)} / {len(src)}")
+        if skipped:
+            print(f"  atlanan tensor  : {len(skipped)}")
+            for k, reason in skipped:
+                print(f"     {k}  ({reason})")
+        if freeze_backbone:
+            n_frozen = sum(1 for p in model.parameters() if not p.requires_grad)
+            print(f"  donduruldu      : {n_frozen} tensor "
+                  f"(sadece kalanlar egitilecek)")
+
+    return list(keep), skipped
+
+
+# ---------------------------------------------------------------
 # IZOLE BIRIM TESTI (PLAN Bolum 12, adim 3)
 # ---------------------------------------------------------------
 def _check(cond, msg):

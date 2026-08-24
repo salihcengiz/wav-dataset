@@ -176,24 +176,140 @@ yazarken eklenir.
 
 ---
 
-## Gerçekçi beklenti
+## Uygulama öncesi tahmin (kayıt için)
 
 ```
 Şu an:        0.628 ± 0.122
 Paket 1:      belirsiz yön — ama SAYI GEÇERLİ olur
-Paket 1+2:    0.68 – 0.73 bandı
+Paket 1+2:    0.68 – 0.73 bandı        <- BU TAHMIN TUTMADI (bkz. asagi)
 + Paket 3:    +0.01 – 0.03
 ```
 
-**0.85+ beklenmiyor** ve öyle bir sayı çıkarsa bir yerde sızıntı aranmalı. Sınıf
-karışıklığı (chain ↔ metal) veri kaynaklı ve model tarafından çözülemez.
+---
+---
 
-**Rapora yazılacak:** kaç konfigürasyon denendiği. Plan **2 konfigürasyon**
-(Paket 1, sonra Paket 1+2). Bu dürüst ve savunulabilir bir sayı.
+# ÖLÇÜLEN SONUÇLAR
+
+> Aşağısı uygulama sonrası eklenmiştir. Yukarıdaki bölümler tahmin/planlama
+> aşamasında yazıldığı gibi bırakılmıştır.
+
+## Ana tablo — üç konfigürasyon
+
+| Konfigürasyon | SK-Attention | Baseline (SK'siz) | Fark | Eşleştirilmiş t |
+|---|---|---|---|---|
+| **Paket 0** — `val_loss` izleniyordu | 0.628 ± 0.122 | 0.442 ± 0.216 | +0.186 | *geçersiz* |
+| **Paket 1** — A1+A2+A3 | 0.614 ± 0.204 | 0.548 ± 0.112 | +0.066 | 0.63 |
+| **Paket 2** — +B1+B2+C1 | **0.622 ± 0.166** | **0.580 ± 0.135** | **+0.042** | **1.26** |
+
+Anlamlılık için t ≈ 3.18 gerekirdi (df=3, p<0.05).
+
+## Paket 1 — sonuç: amacına ulaştı ✅
+
+**A1 (macro-F1 izleme)** — baseline'ın sabote edilmesi durdu:
+
+| Baseline katman | Paket 0 | Paket 1 |
+|---|---|---|
+| 1 | en iyi epoch **1** → F1 **0.162** | en iyi epoch 3 → F1 **0.473** |
+| 2 | en iyi epoch **1** → F1 **0.303** | en iyi epoch 16 → F1 **0.434** |
+
+Baseline ortalaması 0.442 → 0.548, standart sapması 0.216 → 0.112 (yarıya indi).
+
+**A2 (en erken epoch)** — teşhisimizi doğrudan kanıtladı. SK katman 0:
+
+| | Seçilen epoch | Test F1 | Süre |
+|---|---|---|---|
+| Paket 0 | 51 | 0.572 | 170s |
+| Paket 1 | **8** | 0.561 | **52s** |
+
+43 epoch daha az eğitim, neredeyse aynı sonuç → o epoch'lar gerçekten boşunaydı.
+
+**A3 (determinizm)** — doğrulandı. Aynı koşu iki kez çalıştırıldı, 18 epoch'un
+tüm değerleri ve test skoru (0.561) **birebir aynı** çıktı.
+
+## Paket 2 — sonuç: ana metrikte kazanç YOK ❌, ikincil göstergelerde VAR ✅
+
+**Ana metrik:** SK 0.614 → 0.622 (+0.008). ±0.166 gürültüsünde anlamsız.
+**Tahmin edilen 0.68–0.73 bandına ulaşılamadı.**
+
+### Ama şunlar düzeldi:
+
+**1. Test kayıpları düştü** (label smoothing kaybın tabanını *yükselttiği* halde):
+
+| Katman | Paket 1 | Paket 2 |
+|---|---|---|
+| 0 | 0.855 | 1.037 |
+| 1 | 0.647 | 0.603 |
+| 2 | **2.029** | **1.476** |
+| 3 | **1.270** | **0.851** |
+| Toplam | 4.80 | **3.97** |
+
+**2. SK'de aşırı öğrenme bayrağı kalktı** — Paket 1'de katman 1 bayrak alıyordu
+(+0.298), Paket 2'de hiçbir katman almadı.
+
+**3. Baseline'ın kayıp patlaması yumuşadı** — katman 2'de `val_loss` tepesi
+3.98 → 2.38. BatchNorm işini yaptı ama tam çözmedi.
+
+**4. SK'de doğrulama-test korelasyonu ilk kez pozitif** — +0.088 → **+0.597**.
+(Uyarı: 4 noktayla hesaplandı, anlamlılık için ~0.95 gerekirdi. Sinyal, kanıt değil.)
+
+## SK-Attention katkı sağlıyor mu?
+
+Katman katman fark (SK − baseline):
+
+| Katman | Paket 1 | Paket 2 |
+|---|---|---|
+| 0 | +0.003 | +0.033 |
+| 1 | **+0.365** | +0.141 |
+| 2 | **−0.128** | +0.006 |
+| 3 | +0.024 | −0.009 |
+
+Paket 2'de fark **küçüldü ama çok daha tutarlı** hale geldi: dört katman da
+−0.01 ile +0.14 arasında. Paket 1'deki savrulma (+0.365 / −0.128) kayboldu.
+
+**Raporlanacak ifade:**
+> *SK-Attention üç konfigürasyonda da baseline'ın önünde çıktı (+0.19 / +0.07 /
+> +0.04) ve son konfigürasyonda 4 katmanın 3'ünde pozitif fark verdi. Ancak
+> 4 katmanlı çapraz doğrulamanın istatistiksel gücü, bu büyüklükteki bir farkı
+> gürültüden ayırmaya yetmiyor.*
+
+## Değişmeyen sorun: katman 2
+
+| | SK | Baseline |
+|---|---|---|
+| Paket 0 | 0.463 | 0.303 |
+| Paket 1 | 0.306 | 0.434 |
+| Paket 2 | 0.416 | 0.410 |
+
+Katman 2, test setinde **6 grup** taşıyan (diğerlerinde 4–5) ve eğitim setinde
+`chain_link_climbing`'den yalnızca **3 kayıt** kalan katmandır. Hiçbir
+hiperparametre bunu düzeltmedi — sorun hiperparametrede değil.
+
+## Değişmeyen sorun: doğrulama seti güvenilmez
+
+Baseline'da korelasyon Paket 2'de bile **−0.164**. Doğrulama setinde sınıf
+başına yalnızca 1 kayıt olması yapısal bir kısıt; metrik değiştirmek çözmedi,
+düzenlileştirme de çözmedi. Rapora **sınırlama** olarak yazılmalı.
 
 ---
 
-## Karar
+# SONUÇ VE KARAR
 
-Önce **Paket 1 tek başına** koşulacak, temiz bir "önce/sonra" karşılaştırması
-alınacak, durulacak ve rapor verilecek. Ardından **Paket 1+2**.
+Üç konfigürasyon denendi, ana metrik **0.614 / 0.622 / 0.628** aralığında
+oturdu — aradaki farklar ±0.17'lik standart sapmanın çok altında, yani
+**hiçbiri gerçek bir değişim değil**.
+
+Bu, Faz 0'daki akustik analizin öngördüğünü doğruluyor: `chain_link_climbing`
+tutarlı bir sınıf olmadığı sürece tavan bu civarda. Dördüncü, beşinci
+konfigürasyonu denemek kazanç getirmez ve test setini kirletmeye başlar.
+
+**Karar: hiperparametre ayarı burada bırakılmıştır.**
+
+**Rapora yazılacak konfigürasyon sayısı: 3.**
+
+**Sonuç olarak sunulacak konfigürasyon: Paket 2** — en yüksek skoru verdiği için
+değil (Paket 0 daha yüksekti ama geçersizdi), **metodolojik olarak en sağlamı
+olduğu için**: geçerli model seçimi, tekrar üretilebilir sonuçlar, standart
+düzenlileştirme uygulanmış.
+
+**Sıradaki:** Paket 3 (TTA + kendi normalizasyon istatistikleri, yeniden eğitim
+gerektirmez) → Faz 4 (`evaluate.py`) → Faz 5 (rapor).
