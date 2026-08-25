@@ -401,6 +401,20 @@ tanımlı, yani `.sdf` veri kümesi kare sayısının iki katı örnek içeriyor
 Üçü de yanıltıcı. `P` mi `S` mi kullanılacağı **fark eder** — ölçümde
 `S`'nin genliği `P`'ninkinin iki katı (7.0 vs 3.5).
 
+**Tam konumlar** (yorum çelişkisi, üç dosyada da 61. satır):
+
+```
+/tf/start_training/RELATIONNET/sequence_few_shot_train.py       satir 61
+/tf/start_training/RELATIONNET/sequence_few_shot_test.py        satir 61
+/tf/start_training/RELATIONNET/sequence_few_shot_validation.py  satir 61
+
+    s = f[ch][:]['P']  # Sadece S bileşeni alınır
+```
+
+`support_set_creator.py` (23. satır) aynı işi yapıyor ama orada yorum yok.
+
+**Ölçüm `P`'yi destekliyor** (Bölüm 5.4) — yorum yanlış, kod doğru.
+
 ### 6.4 `labels` sınıf sütunu belirsiz
 
 `.sdf` dosyasında 5. sütun hep `1`, CSV "climbing" diyor. `.bin` dosyasında

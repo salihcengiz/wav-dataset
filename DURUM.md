@@ -35,7 +35,13 @@ Kendi ürettiğimiz sentetik spektrogramlarla model geliştirildi ve
 Düşük görünüyor ama **dürüst**: ~960 spektrogram yalnızca **19 bağımsız ses
 kaydından** türetilmişti. Rastgele bölme yapılsaydı %99 görünürdü ve yalan olurdu.
 
+Üç konfigürasyon denendi (0.614 / 0.622 / 0.628), farklar ±0.17 standart
+sapmanın altında kaldı. Tavanın sebebi **model değil veri**:
+`chain_link_climbing` akustik olarak tutarlı bir sınıf değil.
+
 **Çıktı:** `outputs/pretrained/das_2dcnn_sk_v1.pt` (34.835 parametre, 156 KB)
+
+Tam kayıt: `SENTETIK_VERI_SONUCLARI.md`
 
 ### Aşama 2 — Gerçek saha verisi 🔄 DEVAM EDİYOR
 
@@ -52,9 +58,13 @@ Sırada gerçek eğitim var.
 |---|---|---|
 | 1 | **`GERCEK_VERI_FAZ0_RAPORU.md`** | **Şu an aktif olan iş.** Gerçek veri denetimi, kararlar (Bölüm 1.5), ölçümler (Bölüm 5.4) |
 | 2 | `src/real_data.py` | Ön işleme hattı. Docstring'ler gerekçeleri açıklıyor |
-| 3 | `PLAN_2DCNN_SKAttention.md` | Orijinal plan. Metodoloji (Bölüm 2, 5) ve uygulama kararları (Bölüm 6.4) |
-| 4 | `outputs/pretrained/MODEL_CARD.md` | Önceden eğitilmiş model: nasıl yüklenir, sınırları |
-| 5 | `MODEL_IYILESTIRME_PLANI.md` | Sentetik aşamadaki iyileştirme denemeleri ve ölçülen sonuçları |
+| 3 | `outputs/pretrained/MODEL_CARD.md` | Önceden eğitilmiş model: nasıl yüklenir, sınırları |
+| 4 | `PLAN_2DCNN_SKAttention.md` | Orijinal plan. Metodoloji (Bölüm 2, 5) ve uygulama kararları (Bölüm 6.4) |
+| 5 | `SENTETIK_VERI_SONUCLARI.md` | Aşama 1'in tam kaydı: adli bulgular, katman kompozisyonu, hata analizi, neden 0.62'de tıkandı |
+| 6 | `MODEL_IYILESTIRME_PLANI.md` | Sentetik aşamadaki iyileştirme paketleri ve ölçülen sonuçları |
+
+Sadece gerçek veriyle çalışacaksan **1–3** yeter. 5 ve 6, "neden bu kararlar
+alındı" sorusunun cevabı.
 
 **Kod:** `src/` altındaki dosyaların hepsinde uzun docstring'ler var ve **neden**
 öyle yapıldığını anlatıyorlar. Bir karar tuhaf görünüyorsa docstring'e bak.
@@ -194,7 +204,78 @@ yayılımı varsayılan olarak deterministik değil). `train.py` içinde
 
 ---
 
-## 8. ÇALIŞMA YÖNTEMİ
+## 8. ÇALIŞMA ORTAMLARI
+
+Üç ayrı ortam kullanılıyor. Hangisinde ne yapıldığını bilmek önemli.
+
+### A) Yerel makine (Windows) — kod yazma ve doğrulama
+
+```
+c:\Users\Cengiz\Desktop\inosens-internship\dataset
+```
+
+Kurulu: `torch 2.13.0+cpu` (**bilerek CPU-only**), `torchvision 0.28.0+cpu`,
+`sklearn 1.9.0`, `pandas 3.0.5`, `numpy 2.4.4`, `h5py 3.16.0`,
+`matplotlib`, `seaborn`, `librosa`, `soundfile`, `scipy`
+
+**Burada eğitim yapılmaz** — kod yazılır, birim testleri koşturulur, kısa
+smoke test'ler yapılır. GPU'lu torch bilerek kurulmadı.
+
+Kabuk **PowerShell**. İki tuzak var:
+- `Select-Object -First N` boru hattını erken kapatıp süreci öldürüyor →
+  çıkış kodu 255. Hata sanma; tam çıktı için dosyaya yönlendir.
+- Here-string (`@'...'@`) ile `python -c`'ye kod geçirmek tırnakları bozuyor.
+  Uzun kod için geçici bir `.py` dosyası yaz.
+
+### B) Google Colab — sentetik aşamanın eğitimi (Aşama 1)
+
+Notebook: `colab_train.ipynb` (repoda). Akış:
+
+1. **Hücre 1** repoyu klonlar. `rm -rf` + `git clone` içeriyor, yani
+   `outputs/` dahil her şeyi siler — kod güncellendiğinde bunu çalıştır
+2. Drive bağla → **eğitimden ÖNCE**, sonra değil
+3. Eğit → biter bitmez `shutil.copytree('outputs', drive_yolu)` ile yedekle
+
+**Öğrenilen dersler:**
+- Oturum boşta ~90 dk'da kopuyor, `/content` tamamen siliniyor.
+  Bir kez 4 dakikalık koşuyu kaybettik çünkü Drive yedeği alınmamıştı
+- `drive.mount` "credential propagation was unsuccessful" verebiliyor —
+  üçüncü taraf çerezleri engelliyse. Tekrar denemek genelde çözüyor;
+  çözmezse `files.download` ile zip indirmek alternatif
+- Hücre 1'i tekrar çalıştırınca `outputs/` gittiği için, Paket 2 sonuçlarını
+  Drive'dan geri kopyalamak gerekti (`export_model.py` CV geçmişine ihtiyaç
+  duyuyor)
+- T4 GPU'da SK eğitimi (4 katman) ~5 dk, Paket 2'de ~11 dk
+
+Drive'daki yedekler: `MyDrive/das_outputs/paket1_*`, `paket2_*`, `pretrained_*`
+
+### C) Uzak sunucu (JupyterLab) — gerçek veri
+
+VPN + tarayıcı. **Veri sunucudan çıkamaz, eğitim orada olmalı.**
+
+```
+/tf/start_training/RELATIONNET/FENCE_DATA_NEW/   <- CSV'ler, calisma alani
+/tf/segment/YYYY.MM.DD/                          <- asil veri
+```
+
+**Çalışma yöntemi:** kod yazılır → kullanıcı JupyterLab'de çalıştırır →
+çıktı sohbete yapıştırılır. **Kimlik bilgisi asla istenmez.**
+
+Dosya taşıma: sol paneldeki **yukarı ok (↑)** düğmesiyle yükleme. `.py`
+dosyasını yükleyip `import` etmek, hücreye yapıştırmaktan iyi — repodaki
+sürümle birebir aynı kalır.
+
+```python
+import importlib, real_data
+importlib.reload(real_data)      # dosyayi tekrar yukledikten sonra
+```
+
+**Sunucuda henüz doğrulanmadı:** PyTorch var mı, GPU var mı, disk ne kadar.
+Bunlar gerçek eğitim hattının ilk adımı.
+
+---
+
+## 9. ÇALIŞMA YÖNTEMİ
 
 - **Kararlar dosyalara yazılır, sohbete değil.** Bu belge ve raporlar bu
   yüzden var.
