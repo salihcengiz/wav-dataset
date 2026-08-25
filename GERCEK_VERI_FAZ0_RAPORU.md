@@ -268,17 +268,98 @@ kullanamaz.
 
 **Hiçbiri F > 0.12.** Spektrogramlar da gözle ayırt edilemiyor.
 
-#### Bu ne demek, ne demek DEĞİL
+> ⚠️ **BU BÖLÜMÜN SONUCU 5.4'TE DÜZELTİLDİ.** Yukarıdaki F değerleri her
+> özelliği **tek tek** ölçüyor. Ayırt edici bilgi tek bir özellikte toplanmamış,
+> birçoğuna dağılmış olabilir — nitekim öyle çıktı. Tek değişkenli testlerin
+> klasik körlüğü.
 
-**Demek:** Bu iki sınıf, standart akustik ve zaman-yapısı özellikleriyle
-ayrılmıyor. İleride bir model yüksek `climbing`/`cutting` doğruluğu
-raporlarsa, **kısayol/sızıntı açısından incelenmelidir.**
+---
 
-**Demek DEĞİL:** "CNN de ayıramaz." Elle tasarlanmış 15 özellik denendi;
-derin öğrenmenin varlık sebebi insanın tasarlamadığı örüntüleri bulmaktır.
+## 5.4 DÜZELTME — `climbing`/`cutting` AYRILIYOR
 
-**Sınırlar:** sınıf başına 40–60 örnek · yalnızca `P` polarizasyonu ·
-tek pencere boyutu (7.5 s) · tek STFT ayarı.
+Bölüm 5.3'ün "ayrılmıyor" sonucu **yanlıştı.** Ön işleme hattı
+(`src/real_data.py`) kurulduktan sonra tekrar ölçüldü.
+
+### Yöntem
+
+Ekibin hazır bölmeleri kullanıldı (grup-temiz olduğu Bölüm 3'te doğrulandı):
+`train_final.csv` ile eğitim, `val_final.csv` ile ölçüm.
+
+Her pencere tam hattan geçirildi: `hypot` → 15.000 örneğe standartlaştır →
+boş pencereleri ele → pencere-içi normalize → STFT → spektrogram.
+
+Spektrogramdan **26 özellik** çıkarıldı (8 bandın zaman içindeki ortalama/
+std/maks değerleri + zarf istatistikleri), ardından **doğrusal lojistik
+regresyon** eğitildi.
+
+### Sonuç — `P` bileşeni
+
+| Sınıf | precision | recall | F1 |
+|---|---|---|---|
+| **noise** | 0.987 | 0.975 | **0.981** |
+| cutting | 0.637 | 0.725 | 0.678 |
+| climbing | 0.700 | 0.613 | 0.653 |
+| | | **macro-F1** | **0.771** |
+
+Karışıklık matrisi (satır = gerçek):
+
+```
+              climbing  cutting  noise
+climbing            49       31      0
+cutting             21       58      1
+noise                0        2     77
+```
+
+**Karışıklığın tamamı `climbing` ↔ `cutting` arasında.** `noise` hiçbir olayla
+karışmıyor.
+
+### İkili karşılaştırmalar (şans = 0.500)
+
+| | doğruluk |
+|---|---|
+| climbing vs noise | **0.981** |
+| cutting vs noise | **0.981** |
+| **climbing vs cutting** | **0.662** |
+
+160 doğrulama örneğiyle standart hata ≈ 0.037 → güven aralığı kabaca
+**0.59–0.74**. Şansın belirgin şekilde üstünde.
+
+### `P` / `S` karşılaştırması ✅ (Bölüm 8, madde 2 kapandı)
+
+| | `P` | `S` |
+|---|---|---|
+| 3 sınıf macro-F1 | **0.771** | 0.729 |
+| noise F1 | **0.981** | 0.932 |
+| climbing vs cutting | 0.662 | 0.656 |
+
+**`P` her ölçütte önde.** "Yalnızca `P` kullanılacak" kararı ölçümle doğrulandı.
+
+### Bu sayılar TABAN, tavan değil
+
+Yukarıdaki sonuçlar **doğrusal** bir sınıflandırıcının, spektrogramdan elle
+çıkarılmış **26 sayı** üzerindeki performansı.
+
+2D-CNN + SK-Attention modeli:
+- Spektrogramın tamamını görecek (129×231), 26 sayıyı değil
+- Doğrusal değil
+- Zaman-frekans örüntülerini kendisi keşfedecek
+
+**Aşılması gereken taban çizgisi: macro-F1 0.771.**
+
+*(Karşılaştırma: sentetik veride 0.622 ± 0.166 almıştık.)*
+
+### Boş pencere oranı — ikinci ölçüm (Bölüm 8, madde 3 kapandı)
+
+Hat üzerinden, farklı örneklemle tekrarlandı:
+
+| | 1. ölçüm | 2. ölçüm |
+|---|---|---|
+| climbing | %20 | %32 |
+| cutting | %28 | %22 |
+| noise | **%0** | **%0** |
+
+Ortalama **~%27** olay penceresi eleniyor, `noise`'da iki ölçümde de **%0**.
+Eşik (500 Hz üstü enerji payı > 0.45) doğru çalışıyor.
 
 ---
 
@@ -350,11 +431,21 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
 
 ## 8. SONRAKİ ADIMLAR
 
-### Hemen
-- [ ] Mevcut RELATIONNET modelinin **sınıf bazında** sonuçlarını al —
-      `climbing`/`cutting` bulgusunu bağımsız doğrular
-- [ ] `S` polarizasyonuyla 5.3'teki ölçümleri tekrarla
-- [ ] Boş pencereleri (düz spektrum) eleyip ayrışmayı tekrar ölç
+### Tamamlananlar ✅
+- [x] `S` bileşeniyle ölçümleri tekrarla → `P` daha iyi (Bölüm 5.4)
+- [x] Boş pencereleri eleyip ayrışmayı tekrar ölç → macro-F1 0.771 (Bölüm 5.4)
+- [x] Ön işleme hattını yaz → `src/real_data.py`, birim testleri geçti
+- [~] Mevcut RELATIONNET sonuçları — **kapsam dışı bırakıldı**, kendi
+      ölçümümüzü yaptık
+
+### Sırada — gerçek eğitim hattı
+- [ ] Ortam kontrolü: sunucuda PyTorch var mı, GPU var mı
+      (veri sunucudan çıkamaz, eğitim orada olmalı)
+- [ ] Yükleme hızı ölçümü: 293.469 satır × HDF5 açma maliyeti
+- [ ] Alt örneklem stratejisi: satırlar fazlasıyla yedekli (21.318 dosya,
+      dosya başına ~14 bitişik kanal, hepsi aynı olayı görüyor)
+- [ ] PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
+- [ ] `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan
 
 ### Spektrogram hattı — kesinleşmiş tarif
 
