@@ -654,6 +654,68 @@ olmadan aynı sorunu çözer.
 
 ---
 
+## 8.6 ÖNBELLEK KURULDU (2026-08-26)
+
+`src/onbellek_kur.py` ile üç önbellek kuruldu, üçü de doğrulandı.
+
+| | seçilen satır | yazılan pencere | elenen (boş) | süre | boyut |
+|---|---|---|---|---|---|
+| train | 286.941 | **220.834** | 66.107 (**%23.0**) | 19.2 dk | 6.59 GB |
+| val | 37.559 | **37.517** | 42 (**%0.1**) | 2.7 dk | 1.12 GB |
+| test | 42.880 | **42.850** | 30 (**%0.1**) | 3.1 dk | 1.28 GB |
+
+Hata: **0**. Doğrulama: her önbellekte 20 rastgele pencere kaynak dosyadan
+yeniden hesaplandı, **20/20 birebir aynı** (uint8 sapması 0).
+
+### 🔍 ANA BULGU — val/test elle ayıklanmış
+
+train'de boş pencere oranı **%23.0**, val/test'te **%0.1**. 230 kat fark.
+
+Daha önce toplanan üç ipucuyla birleşiyor:
+
+| Gösterge | train | val/test |
+|---|---|---|
+| Kanallar bitişik mi | ✅ evet | ❌ hayır (aralıklar 3, 4, 18, 53) |
+| Pencere uzunluğu çeşidi | 315 (`.bin`) | 4 |
+| Dosya biçimi | %97.8 `.bin` | %100 `.bin` |
+| Boş pencere | %23.0 | %0.1 |
+
+**Sonuç: val/test kürasyonlu alt kümeler.** Bölmeleri kuran kişi olayı
+gerçekten gösteren kanalları seçmiş; train ham bırakılmış.
+
+**Metodolojik sonucu — boş pencere filtresi train'i val/test'e yaklaştırıyor.**
+Filtre olmasaydı model, val/test'te hiç karşılaşmayacağı 66.107 sinyalsiz
+pencereye `climbing`/`cutting` demeyi öğrenecekti. Rapor 6.1'in önerdiği
+filtre, ölçülmemiş bir sezgiden ibaret değilmiş.
+
+⚠️ **Çıkarım (deployment) için not:** gerçek fiberde zayıf kanallar da
+olacak. Hattımız onlara `None` döndürüyor, yani "tespit yok" diyor —
+yanlış sınıflandırmıyor. Doğru davranış, ama rapora yazılmalı.
+
+### Sınıf bazında elenme — önceki ölçümlerle tutarlı
+
+| sınıf | `.bin` satır | yazılan | elenen |
+|---|---|---|---|
+| climbing | 145.764 | 108.527 | %25.5 |
+| cutting | 121.628 | 92.922 | %23.6 |
+| noise | 19.549 | 19.385 | **%0.8** |
+
+Bölüm 6.1'deki ilk ölçüm (climbing %20, cutting %28, noise %0) doğrulandı.
+
+### Eğitim sonrası sınıf dağılımı
+
+| | climbing | cutting | noise |
+|---|---|---|---|
+| train | %49.1 | %42.1 | **%8.8** |
+| val | %48.5 | %42.1 | %9.4 |
+| test | %51.1 | %40.6 | %8.3 |
+
+Üç bölme de tutarlı. `noise` hâlâ ~%9 — dengesizlik sürüyor, ama taban
+çizgisinde `noise` en kolay sınıftı (F1 0.981), asıl zorluk
+`climbing`↔`cutting`. Yine de sınıf ağırlığı seçeneği açık tutulmalı.
+
+---
+
 ## 9. SENTETİK VERİYLE KARŞILAŞTIRMA
 
 | | Sentetik | Gerçek |

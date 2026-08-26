@@ -162,7 +162,21 @@ sıfır maliyetle üretiyor, yeniden kurulum gerekmiyor.
 
 Ayrıntı ve tüm sayılar: `GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 8.5
 
-### 🔄 Şimdi: spektrogram önbelleği (`src/onbellek_kur.py`)
+### ✅ Önbellekler kuruldu ve doğrulandı (2026-08-26)
+
+| | pencere | boş elendi | boyut |
+|---|---|---|---|
+| train | **220.834** | %23.0 | 6.59 GB |
+| val | **37.517** | %0.1 | 1.12 GB |
+| test | **42.850** | %0.1 | 1.28 GB |
+
+Üçünde de doğrulama 20/20 birebir geçti, hata 0.
+
+⚠️ **Bulgu: val/test elle ayıklanmış.** train'de boş pencere %23, val/test'te
+%0.1. Boş pencere filtremiz train'i val/test'e *yaklaştırıyor*. Ayrıntı:
+`GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 8.6
+
+### Önbellek nasıl kuruldu (`src/onbellek_kur.py`)
 
 Ön-hesaplama kararı ölçüme dayanıyor: darboğaz I/O olduğu için her epoch'ta
 HDF5 okumak her epoch'a 4–19 dk ekler. Bir kez hesaplanıp **uint8** olarak
@@ -175,10 +189,33 @@ ilerleyebilir, üretilen önbelleği PyTorch da Keras da okur.
 (önbelleği kur) · `--dogrula` (önbelleği kaynaktan yeniden hesaplayıp
 birebir karşılaştır).
 
-Sonra:
-- PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
-- `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan
-- train_final / val_final / test_final ile eğit
+### ✅ PyTorch veri kümesi yazıldı (`src/gercek_veri_kumesi.py`)
+
+Önbellekten model girdisi üretir: uint8 → viridis → 224×320 → ImageNet
+normalizasyonu. 8 birim testi geçiyor (çok işçili okumanın tek işçiliyle
+birebir aynı olduğu dahil). Yerelde CPU torch ile test edildi.
+
+İki ayrıntı önemli:
+- **viridis gömülü.** Sentetik model viridis PNG görmüştü; aktarımın
+  anlamlı olması için aynı temsil gerekiyor. `matplotlib` bağımlılığı yok.
+- **`__getstate__` h5py tutamacını düşürüyor.** Olmasaydı `num_workers>0`
+  Windows'ta çöker, Linux'ta *sessizce yanlış veri* okuyabilirdi.
+
+### ⏳ Sıradaki: eğitim
+
+- [ ] **`torch` kurulumu** — tek engel bu (Bölüm 7, madde 0)
+- [ ] Eğitim döngüsü: `train.py`'nin gerçek veri karşılığı
+- [ ] **Sıfırdan mı, aktarımla mı?** İkisi de ölçülmeli — aşağıya bak
+
+⚠️ **Aktarım varsayımı artık geçerli değil.** Önceden eğitilmiş paket "çok
+az saha verisi varken sıfırdan başlamamak" için üretilmişti (MODEL_CARD).
+Ama artık **220.834 pencere / 21.101 bağımsız dosya** var; sentetikte 959
+pencere / **19** kayıt vardı. 1.100 kat daha fazla bağımsız kaynak.
+
+Bu ölçekte sıfırdan eğitim muhtemelen en az aktarım kadar iyi. Karar
+tahminle değil ölçümle verilmeli: iki koşu, aynı bölmeler, aynı tohum,
+ikisi de raporlanır. Rapora "sentetik ön-eğitim işe yarıyor mu" diye somut
+bir bölüm açar.
 
 ---
 
