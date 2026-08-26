@@ -196,8 +196,13 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
     for ad, dosya in (("train", "onbellek_train_final_k0.h5"),
                       ("val", "onbellek_val_final_k0.h5"),
                       ("test", "onbellek_test_final_k0.h5")):
+        # train RAM'e aliniyor cunku KARISTIRILARAK okunuyor: onbellek
+        # chunks=(64,...) + LZF ile yazildi, rastgele erisimde her ornek
+        # icin 64 orneklik blok aciliyor (olculdu: 900 ornek/s).
+        # val/test sirali okunuyor, batch=64 tam bir bloga denk geliyor --
+        # onlarda diskten okumak sorun degil.
         k = OnbellekKumesi(veri / dosya, egitim=(ad == "train"),
-                           renk=ayar["renk"])
+                           renk=ayar["renk"], bellege_al=(ad == "train"))
         kumeler[ad] = k
         yukleyiciler[ad] = yukleyici(k, batch=batch, isci=isci)
     siniflar = kumeler["train"].siniflar
@@ -343,9 +348,68 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
     return gecmis
 
 
+def olcum(veri=VERI, batch=BATCH, isci=6, n_batch=150, renk="viridis"):
+    """
+    Darbogaz NEREDE? Uc asamayi ayri ayri olcer:
+
+      1. yalnizca VERI   -- DataLoader'dan batch cekmek (CPU + disk/RAM)
+      2. veri + GPU'ya   -- + .to(cuda) + hazirla()
+      3. tam adim        -- + ileri/geri gecis + optimizer
+
+    Aradaki farklar hangi asamanin ne kadar pay aldigini gosterir.
+    Ayrica bellege_al=True ile False'i karsilastirir -- 64 kat blok
+    buyutmesi teshisi dogru muydu, olcerek gorulur.
+    """
+    cihaz = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("=" * 78)
+    print(f"HIZ OLCUMU  |  cihaz {cihaz}  |  batch {batch}  isci {isci}")
+    print("=" * 78)
+    yol = Path(veri) / "onbellek_train_final_k0.h5"
+
+    for bellek in (False, True):
+        etiket = "RAM'de" if bellek else "diskten (h5py)"
+        print(f"\n  --- {etiket} ---")
+        set_deterministic(TOHUM)
+        k = OnbellekKumesi(yol, egitim=True, renk=renk, bellege_al=bellek)
+        yukl = yukleyici(k, batch=batch, isci=isci)
+        model = DASNet(attention="sk", n_classes=len(k.siniflar)).to(cihaz)
+        kayip_fn = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
+        optim = torch.optim.Adam(model.parameters(), lr=LR)
+
+        for asama in ("yalniz veri", "+ GPU'ya + hazirla", "+ tam adim"):
+            it = iter(yukl)
+            for _ in range(10):                     # isinma
+                next(it)
+            t0 = time.perf_counter()
+            n = 0
+            for i, (x, y) in enumerate(it):
+                if i >= n_batch:
+                    break
+                if asama != "yalniz veri":
+                    x = hazirla(x.to(cihaz, non_blocking=True), egitim=True)
+                    y = y.to(cihaz, non_blocking=True)
+                if asama == "+ tam adim":
+                    optim.zero_grad(set_to_none=True)
+                    kayip_fn(model(x), y).backward()
+                    optim.step()
+                n += y.shape[0]
+            if cihaz.type == "cuda":
+                torch.cuda.synchronize()
+            hiz = n / (time.perf_counter() - t0)
+            epoch_dk = 220_834 / hiz / 60
+            print(f"    {asama:<22} {hiz:>8,.0f} ornek/s   "
+                  f"-> epoch ~{epoch_dk:.1f} dk")
+        del k, yukl, model
+    print(f"\n  Yorum: 'yalniz veri' cok dusukse darbogaz okuma tarafinda.")
+    print(f"  RAM'deki satirlar diskten okumadan belirgin hizliysa, blok")
+    print(f"  buyutmesi teshisi dogrulanmis olur.")
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="Gercek veri egitimi")
+    ap.add_argument("--olcum", action="store_true",
+                    help="darbogaz olcumu, egitim yapmaz")
     ap.add_argument("--kosu", type=int, default=1, choices=[1, 2, 3])
     ap.add_argument("--veri", default=str(VERI))
     ap.add_argument("--cikti", default=str(CIKTI))
@@ -358,6 +422,9 @@ if __name__ == "__main__":
                     help="kisa duman testi, sonuc raporlanmaz")
     ap.add_argument("--onceden", default=None, help="aktarim paketi yolu")
     a = ap.parse_args()
-    kos(a.kosu, veri=a.veri, cikti=a.cikti, epoch=a.epoch, batch=a.batch,
-        isci=a.isci, sinif_agirligi=a.sinif_agirligi, hizli=a.hizli,
-        onceden=a.onceden)
+    if a.olcum:
+        olcum(veri=a.veri, batch=a.batch, isci=a.isci)
+    else:
+        kos(a.kosu, veri=a.veri, cikti=a.cikti, epoch=a.epoch, batch=a.batch,
+            isci=a.isci, sinif_agirligi=a.sinif_agirligi, hizli=a.hizli,
+            onceden=a.onceden)

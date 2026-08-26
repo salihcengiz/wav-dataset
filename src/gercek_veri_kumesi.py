@@ -73,6 +73,7 @@ numpy + h5py + torch. torchvision GEREKMEZ (olcekleme F.interpolate ile).
 """
 import base64
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -145,9 +146,28 @@ class OnbellekKumesi(Dataset):
         Yalnizca yukleyici()'nin shuffle varsayilanini belirler. Maskeleme
         artik burada DEGIL, hazirla(egitim=True) icinde.
     renk : "viridis" | "gri"
+    bellege_al : bool
+        True ise TUM onbellek bir kez okunup RAM'de tutulur.
+
+        *** KARISTIRILMIS OKUMA ICIN ZORUNLU. ***
+
+        Onbellek chunks=(64,129,231) + LZF ile yazildi. shuffle=True iken
+        her ornek rastgele bir yerden istenir ve HDF5 tek ornek icin 64
+        orneklik BUTUN blogu acmak zorunda kalir. Ustelik h5py'nin
+        varsayilan blok onbellegi 1 MB, blok 1.9 MB -- hicbir zaman
+        tutmaz, her okuma bastan acar. Olculen sonuc: 900 ornek/s
+        (RTX 3090'da 34.835 parametrelik model icin absurt derecede yavas).
+
+        RAM'e alinca rastgele erisim bedava olur. Maliyet: train icin
+        6.58 GB (129*231 bayt x 220.834). Yukleme SIRALI oldugu icin her
+        blok yalnizca BIR kez aciliyor.
+
+        val/test icin gerekmez: sirali okunuyorlar ve batch=64 tam olarak
+        bir bloga denk geliyor, yani blok basina tek acilis.
     """
 
-    def __init__(self, yol, indeksler=None, egitim=False, renk="viridis"):
+    def __init__(self, yol, indeksler=None, egitim=False, renk="viridis",
+                 bellege_al=False, rdcc_mb=64, sessiz=False):
         if h5py is None:
             raise ImportError("h5py gerekli")
         if renk not in ("viridis", "gri"):
@@ -156,7 +176,9 @@ class OnbellekKumesi(Dataset):
         self.yol = str(yol)
         self.egitim = egitim
         self.renk = renk
+        self.rdcc = int(rdcc_mb * 1024 * 1024)
         self._f = None                       # her iscide ayri acilacak
+        self._ram = None
 
         with h5py.File(self.yol, "r") as f:
             self.n_toplam = int(f["spektrogram"].shape[0])
@@ -166,17 +188,50 @@ class OnbellekKumesi(Dataset):
                              for s in f.attrs.get("siniflar", [])]
             self.kaynak_csv = str(f.attrs.get("kaynak_csv", "?"))
 
-        self.indeksler = (np.arange(self.n_toplam) if indeksler is None
-                          else np.asarray(indeksler, dtype=np.int64))
+        # SIRALI tutuluyor: h5py artan sirali indeks listesi ister ve
+        # bellege alma bloklari sirayla gezebilsin diye. Sira onemsiz --
+        # egitimde DataLoader zaten karistiriyor, degerlendirmede metrikler
+        # siradan bagimsiz.
+        self.indeksler = np.sort(
+            np.arange(self.n_toplam) if indeksler is None
+            else np.asarray(indeksler, dtype=np.int64))
         self.etiketler = self.etiketler_tum[self.indeksler]
 
         self._lut = viridis_lut() if renk == "viridis" else None
+
+        if bellege_al:
+            self._bellege_al(sessiz)
+
+    def _bellege_al(self, sessiz=False):
+        """
+        Kullanilacak satirlari tek seferde RAM'e okur.
+
+        SIRALI okuma: bloklar artan sirada gezildigi icin her blok tam
+        olarak bir kez aciliyor. Rastgele okumadaki 64 kat buyutme yok.
+        """
+        n = len(self.indeksler)
+        bayt = n * int(np.prod(self.sekil))
+        if not sessiz:
+            print(f"    onbellek RAM'e aliniyor: {n:,} pencere, "
+                  f"{bayt / 1e9:.2f} GB ...", end="", flush=True)
+        t0 = time.perf_counter()
+        self._ram = np.empty((n,) + self.sekil, dtype=np.uint8)
+        with h5py.File(self.yol, "r", rdcc_nbytes=self.rdcc) as f:
+            d = f["spektrogram"]
+            adim = 4096
+            for i in range(0, n, adim):
+                idx = self.indeksler[i:i + adim]   # zaten sirali (bkz. __init__)
+                self._ram[i:i + len(idx)] = d[idx]
+        if not sessiz:
+            print(f" {time.perf_counter() - t0:.0f} s")
 
     # --- h5py tutamaci: her iscide ayri ---
     @property
     def dosya(self):
         if self._f is None:
-            self._f = h5py.File(self.yol, "r")
+            # rdcc_nbytes: varsayilan 1 MB, bizim blok 1.9 MB -- varsayilanla
+            # blok onbellegi HIC tutmaz, her okuma bastan acar.
+            self._f = h5py.File(self.yol, "r", rdcc_nbytes=self.rdcc)
         return self._f
 
     def __getstate__(self):
@@ -193,6 +248,12 @@ class OnbellekKumesi(Dataset):
              En sinsi hata turu: egitim calisir, sonuc bozuktur.
 
         Tutamaci burada dusurunce her isci kendi dosyasini acar.
+
+        NOT: `_ram` (bellege alinmis dizi) BILEREK dusurulmuyor. Linux'ta
+        DataLoader 'fork' kullanir, pickle devreye girmez ve dizi
+        kopyalanmadan (copy-on-write) paylasilir. 'spawn' kullanan bir
+        platformda isci basina kopyalanirdi -- sunucu Linux, sorun degil,
+        ama bellege_al=True + Windows + isci>0 birlesimi kullanilmamali.
         """
         durum = self.__dict__.copy()
         durum["_f"] = None
@@ -209,9 +270,11 @@ class OnbellekKumesi(Dataset):
         yapiliyor (modul docstring'ine bak). Burada yalnizca renklendirme
         var, cunku o uint8 uzerinde bedava.
         """
-        j = int(self.indeksler[i])
-        u = self.dosya["spektrogram"][j]            # (129, 231) uint8
-        y = int(self.etiketler_tum[j])
+        if self._ram is not None:
+            u = self._ram[i]                        # (129, 231) uint8, RAM
+        else:
+            u = self.dosya["spektrogram"][int(self.indeksler[i])]
+        y = int(self.etiketler[i])
 
         if self._lut is not None:
             rgb = self._lut[u]                      # (129, 231, 3) uint8
