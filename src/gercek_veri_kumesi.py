@@ -406,11 +406,25 @@ def self_test(onbellek):
 
     print(f"\n[7] Cok isci ile okuma  (h5py tutamaci her iscide ayri mi)")
     print(cizgi)
-    dl2 = yukleyici(k, batch=8, karistir=False, isci=2)
-    x2 = torch.cat([b[0] for b in dl2])
-    x0 = torch.cat([b[0] for b in yukleyici(k, batch=8, karistir=False, isci=0)])
-    print(f"  isci=0 ile isci=2 ciktilari arasindaki maks fark: "
-          f"{(x2 - x0).abs().max():.2e}")
+
+    # SADECE ILK N BATCH. Tum kumeyi belege toplamak 220.834 ornekte
+    # 19.7 GB eder ve surec OOM ile oldurulur -- bir kez oldu.
+    N_BATCH = 10
+
+    def ilk_batchler(isci):
+        cikan = []
+        for i, (xb_, _) in enumerate(yukleyici(k, batch=8, karistir=False,
+                                               isci=isci)):
+            if i >= N_BATCH:
+                break
+            cikan.append(xb_)
+        return torch.cat(cikan)
+
+    x2, x0 = ilk_batchler(2), ilk_batchler(0)
+    print(f"  ilk {N_BATCH} batch ({x0.shape[0]} ornek, "
+          f"{x0.numel()/1e6:.1f} MB) karsilastiriliyor")
+    print(f"  isci=0 ile isci=2 arasindaki maks fark: "
+          f"{(x2.int() - x0.int()).abs().max()}")
     assert torch.equal(x2, x0), ("isci sayisi sonucu degistiriyor -- h5py "
                                  "tutamaci sureclerde paylasiliyor olabilir")
     print(f"  [x] Cok iscili okuma tek iscili okumayla BIREBIR ayni")
