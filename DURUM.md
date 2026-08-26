@@ -201,11 +201,22 @@ birebir aynı olduğu dahil). Yerelde CPU torch ile test edildi.
 - **`__getstate__` h5py tutamacını düşürüyor.** Olmasaydı `num_workers>0`
   Windows'ta çöker, Linux'ta *sessizce yanlış veri* okuyabilirdi.
 
-### ⏳ Sıradaki: eğitim
+### ✅ Eğitim hattı yazıldı (`src/gercek_egitim.py`)
 
-- [ ] **`torch` kurulumu** — tek engel bu (Bölüm 7, madde 0)
-- [ ] Eğitim döngüsü: `train.py`'nin gerçek veri karşılığı
-- [ ] **Sıfırdan mı, aktarımla mı?** İkisi de ölçülmeli — aşağıya bak
+- [x] **`torch` kuruldu** — 2.5.1+cu121, GPU görülüyor, numpy 1.26.4 korundu
+- [x] Eğitim döngüsü yazıldı, üç koşu da yerelde sınandı
+- [ ] **Sunucuda koş** — önce `--hizli` duman testi, sonra üç koşu
+
+Üç koşu (önceden tasarlandı, test setine bakmadan):
+
+| # | girdi | başlangıç | neyi ölçer |
+|---|---|---|---|
+| 1 | viridis | sıfırdan | referans |
+| 2 | viridis | aktarım | 1'e karşı: sentetik ön-eğitim işe yarıyor mu |
+| 3 | gri | sıfırdan | 1'e karşı: viridis zarar veriyor mu |
+
+Her koşuda **tek değişken** değişiyor. İkisini birden değiştirmek hangi
+etkinin fark yarattığını belirsizleştirirdi.
 
 ⚠️ **Aktarım varsayımı artık geçerli değil.** Önceden eğitilmiş paket "çok
 az saha verisi varken sıfırdan başlamamak" için üretilmişti (MODEL_CARD).
@@ -254,6 +265,20 @@ Ekibin mevcut kodunda eğitim ve çıkarım dört noktada ayrışıyor (ölçek
 katsayısı, pencere boyutu, P/S, sessiz pencere filtresi). **Bizim hattımızda
 tek fonksiyon var** — `real_data.pencere_yukle`. İki kod yolu olmadığı için
 tutarsızlık imkânsız.
+
+### Şekil uyuyor diye anlam da uyuyor sanmak
+
+Aktarımda `load_pretrained` yalnızca **şekil** uyuşmazlığını yakalıyordu.
+Sentetik sınıflar `[chain_link_climbing, fence_cutting, metal_bending]`,
+gerçek sınıflar `[cutting, climbing, noise]` — ikisi de **3 tane**. Şekiller
+uyduğu için `classifier` katmanı sessizce yüklendi (`42/42 tensör`).
+
+Ama bunlar farklı kavramlar, sıraları farklı ve `noise`'un sentetikte
+karşılığı bile yok. MODEL_CARD zaten "classifier sıfırdan başlayacak"
+diyordu; kod bunu sınıf sayısı tesadüfen eşleştiği için yapmıyordu.
+
+→ `load_pretrained(..., atla=("classifier",))` eklendi. Sessiz hataydı:
+hiçbir metrik göstermezdi, sadece 2. koşu yanıltıcı çıkardı.
 
 ### Determinizmi açmayı unutmak
 

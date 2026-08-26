@@ -237,7 +237,8 @@ def count_parameters(model):
 # ---------------------------------------------------------------
 # TRANSFER OGRENME YARDIMCISI
 # ---------------------------------------------------------------
-def load_pretrained(model, bundle, freeze_backbone=False, verbose=True):
+def load_pretrained(model, bundle, freeze_backbone=False, verbose=True,
+                    atla=()):
     """
     Onceden egitilmis agirliklari `model`e yukler; SEKLI UYMAYAN tensorleri atlar.
 
@@ -247,6 +248,15 @@ def load_pretrained(model, bundle, freeze_backbone=False, verbose=True):
         veride sinif sayisi degisince (orn. 3 -> 5) 'classifier' katmani tam
         da bu hataya girer. Bu fonksiyon o tensorleri atlayip omurgayi yukler.
 
+    ⚠️ SEKIL KONTROLU TEK BASINA YETMEZ -- `atla` bunun icin var:
+        Sekil uyuyor diye anlam da uyuyor demek degildir. Gercek veride sinif
+        SAYISI da 3 (cutting/climbing/noise), sentetikte de 3
+        (chain_link_climbing/fence_cutting/metal_bending). Sekiller uydugu
+        icin classifier SESSIZCE yuklenir -- ama bunlar farkli kavramlar,
+        siralari farkli ve 'noise'un sentetikte karsiligi bile yok.
+        MODEL_CARD "classifier sifirdan baslayacak" diyor; bunu saglamak
+        icin atla=("classifier",) gecilmeli.
+
     Parametreler
     ------------
     bundle : dict | str | Path
@@ -254,6 +264,9 @@ def load_pretrained(model, bundle, freeze_backbone=False, verbose=True):
     freeze_backbone : bool
         True ise yuklenen katmanlarin gradyani kapatilir -- cok az saha
         verisi varken yalnizca sinif katmanini egitmek icin.
+    atla : dizi
+        Bu on eklerle baslayan tensorler, sekilleri uysa bile YUKLENMEZ.
+        Ornek: atla=("classifier",)
 
     Donen
     -----
@@ -266,9 +279,12 @@ def load_pretrained(model, bundle, freeze_backbone=False, verbose=True):
     src = bundle["state_dict"] if "state_dict" in bundle else bundle
 
     own = model.state_dict()
+    atla = tuple(atla)
     keep, skipped = {}, []
     for k, v in src.items():
-        if k in own and own[k].shape == v.shape:
+        if atla and k.startswith(atla):
+            skipped.append((k, "bilerek atlandi (atla)"))
+        elif k in own and own[k].shape == v.shape:
             keep[k] = v
         else:
             reason = "yok" if k not in own else f"sekil {tuple(v.shape)} != {tuple(own[k].shape)}"

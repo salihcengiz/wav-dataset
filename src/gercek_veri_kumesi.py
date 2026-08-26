@@ -5,11 +5,27 @@ onbellek_kur.py'nin urettigi uint8 spektrogram onbelleginden model girdisi
 uretir. Egitim ve degerlendirme AYNI sinifi kullanir.
 
     onbellek (129 x 231 uint8)
-      -> renklendir (viridis 3 kanal, veya gri)
-      -> 224 x 320'ye olcekle
-      -> [0,1] + ImageNet normalizasyonu
+      -> renklendir (viridis 3 kanal, veya gri)        [Dataset, CPU]
+      -> (3, 129, 231) uint8 tensor                    [DataLoader ciktisi]
+                              |
+                              |  .to(cuda)             <- 1.8 MB/batch
+                              v
+      -> [0,1] -> 224x320'ye olcekle -> ImageNet norm  [hazirla(), GPU]
       -> (istege bagli) zaman/frekans maskeleme        [yalnizca egitimde]
-      -> (3, 224, 320) float32 tensor
+      -> (B, 3, 224, 320) float32
+
+=== NEDEN DONUSUM GPU'DA ===
+
+Ilk surum her ornegi CPU'da 224x320 float32'ye ceviriyordu. Batch basina
+PCIe'den gecen veri 55 MB (64 x 3 x 224 x 320 x 4 bayt). uint8 gonderip
+olceklemeyi GPU'da yapinca 1.8 MB -- 30 kat az.
+
+Ustelik en pahali islem olcekleme (interpolasyon) ve GPU bosta: model
+34.835 parametre, ileri/geri gecis birkac milisaniye suruyor. Darbogaz
+VERI tarafinda (bu zaten olculmustu: dilim okuma %49, STFT %22).
+
+TEK KOD YOLU korunuyor: hazirla() hem egitimde hem cikarimda cagrilir,
+tensor hangi cihazdaysa orada calisir. Iki ayri donusum yolu YOK.
 
 === NEDEN VIRIDIS ===
 
@@ -126,17 +142,12 @@ class OnbellekKumesi(Dataset):
         Alt orneklem icin onbellek_kur.onbellek_alt_kume() ile uretilir --
         onbellegi yeniden kurmaya gerek YOK.
     egitim : bool
-        True ise maskeleme uygulanir. Degerlendirmede MUTLAKA False.
+        Yalnizca yukleyici()'nin shuffle varsayilanini belirler. Maskeleme
+        artik burada DEGIL, hazirla(egitim=True) icinde.
     renk : "viridis" | "gri"
-    maske_p / maske_frac :
-        Zaman ve frekans maskelemesi (SpecAugment ruhunda). PLAN 7.2'den:
-        serit genisligi eksenin en fazla %10'u. Cevirme YOK -- spektrogramda
-        zaman veya frekans eksenini ters cevirmek fiziksel olarak anlamsiz.
     """
 
-    def __init__(self, yol, indeksler=None, egitim=False, renk="viridis",
-                 girdi=(GIRDI_H, GIRDI_W), maske_p=0.5, maske_frac=0.10,
-                 tohum=42):
+    def __init__(self, yol, indeksler=None, egitim=False, renk="viridis"):
         if h5py is None:
             raise ImportError("h5py gerekli")
         if renk not in ("viridis", "gri"):
@@ -145,10 +156,6 @@ class OnbellekKumesi(Dataset):
         self.yol = str(yol)
         self.egitim = egitim
         self.renk = renk
-        self.girdi = tuple(girdi)
-        self.maske_p = maske_p
-        self.maske_frac = maske_frac
-        self.tohum = tohum
         self._f = None                       # her iscide ayri acilacak
 
         with h5py.File(self.yol, "r") as f:
@@ -164,8 +171,6 @@ class OnbellekKumesi(Dataset):
         self.etiketler = self.etiketler_tum[self.indeksler]
 
         self._lut = viridis_lut() if renk == "viridis" else None
-        self._mean = torch.tensor(NORM_MEAN).view(3, 1, 1)
-        self._std = torch.tensor(NORM_STD).view(3, 1, 1)
 
     # --- h5py tutamaci: her iscide ayri ---
     @property
@@ -197,50 +202,23 @@ class OnbellekKumesi(Dataset):
         return len(self.indeksler)
 
     def __getitem__(self, i):
+        """
+        Donen: (3, 129, 231) uint8 tensor ve etiket.
+
+        Olcekleme/normalizasyon BURADA YAPILMIYOR -- hazirla() ile GPU'da
+        yapiliyor (modul docstring'ine bak). Burada yalnizca renklendirme
+        var, cunku o uint8 uzerinde bedava.
+        """
         j = int(self.indeksler[i])
         u = self.dosya["spektrogram"][j]            # (129, 231) uint8
         y = int(self.etiketler_tum[j])
 
         if self._lut is not None:
             rgb = self._lut[u]                      # (129, 231, 3) uint8
-            x = torch.from_numpy(np.ascontiguousarray(
-                rgb.transpose(2, 0, 1)))            # (3, H, W)
+            x = torch.from_numpy(np.ascontiguousarray(rgb.transpose(2, 0, 1)))
         else:
-            x = torch.from_numpy(u.astype(np.uint8))[None].repeat(3, 1, 1)
-
-        # Olcekle -> [0,1] -> ImageNet normalizasyonu
-        x = F.interpolate(x[None].float(), size=self.girdi,
-                          mode="bilinear", align_corners=False,
-                          antialias=True)[0] / 255.0
-        x = (x - self._mean) / self._std
-
-        if self.egitim:
-            x = self._maskele(x, j)
+            x = torch.from_numpy(np.ascontiguousarray(u))[None].repeat(3, 1, 1)
         return x, y
-
-    def _maskele(self, x, tohum_ek):
-        """
-        Zaman (dikey serit) ve frekans (yatay serit) maskelemesi.
-
-        Maskelenen bolge 0 yapiliyor -- normalize edilmis uzayda 0, veri
-        setinin ortalamasina karsilik gelir. "Bilgi yok" demenin dogru yolu
-        budur; siyah (=-mean/std) demek degil.
-        """
-        g = torch.Generator().manual_seed(self.tohum * 1_000_003 + tohum_ek)
-        _, H, W = x.shape
-        for eksen, boy in ((1, H), (2, W)):
-            if torch.rand(1, generator=g).item() > self.maske_p:
-                continue
-            for _ in range(int(torch.randint(1, 3, (1,), generator=g))):
-                genislik = int(torch.randint(
-                    1, max(2, int(boy * self.maske_frac)), (1,), generator=g))
-                bas = int(torch.randint(0, max(1, boy - genislik), (1,),
-                                        generator=g))
-                if eksen == 1:
-                    x[:, bas:bas + genislik, :] = 0.0
-                else:
-                    x[:, :, bas:bas + genislik] = 0.0
-        return x
 
     # --- yardimcilar ---
     def sinif_sayilari(self):
@@ -258,6 +236,74 @@ class OnbellekKumesi(Dataset):
         n[n == 0] = 1.0
         w = n.sum() / (len(n) * n)
         return torch.tensor(w / w.mean(), dtype=torch.float32)
+
+
+# ---------------------------------------------------------------
+# DONUSUM -- EGITIM DE CIKARIM DA BUNU CAGIRIR
+# ---------------------------------------------------------------
+_MEAN = torch.tensor(NORM_MEAN).view(1, 3, 1, 1)
+_STD = torch.tensor(NORM_STD).view(1, 3, 1, 1)
+
+
+def hazirla(x, egitim=False, girdi=(GIRDI_H, GIRDI_W),
+            maske_p=0.5, maske_frac=0.10):
+    """
+    (B, 3, 129, 231) uint8  ->  (B, 3, 224, 320) float32, normalize edilmis.
+
+    Tensor hangi cihazdaysa orada calisir -- GPU'ya tasinmis bir batch
+    verilirse tum is GPU'da yapilir.
+
+    Sira, onceden egitilmis modelin gordugu sirayla AYNI (MODEL_CARD):
+        Resize -> [0,1] -> Normalize(ImageNet)
+
+    egitim=True ise sonrasinda zaman/frekans maskelemesi uygulanir.
+    Degerlendirmede MUTLAKA egitim=False -- yoksa olculen sey rastgele
+    bozulmus girdiler uzerindeki performans olur.
+    """
+    if x.dtype == torch.uint8:
+        x = x.float()
+    x = F.interpolate(x, size=tuple(girdi), mode="bilinear",
+                      align_corners=False, antialias=True) / 255.0
+    x = (x - _MEAN.to(x.device, x.dtype)) / _STD.to(x.device, x.dtype)
+    return _maskele(x, maske_p, maske_frac) if egitim else x
+
+
+def _maskele(x, p=0.5, frac=0.10):
+    """
+    SpecAugment ruhunda zaman (dikey serit) ve frekans (yatay serit)
+    maskelemesi. Batch'teki her ornege AYRI uygulanir.
+
+    Maskelenen bolge 0 yapiliyor -- normalize edilmis uzayda 0, veri
+    setinin ortalamasina karsilik gelir. "Bilgi yok" demenin dogru yolu
+    budur; siyah (= -mean/std) demek degil.
+
+    CEVIRME YOK: spektrogramda zaman eksenini ters cevirmek sesi geri
+    sarmak, frekans eksenini ters cevirmek tiz ile pesi takas etmektir --
+    ikisi de fiziksel olarak anlamsiz (PLAN 7.2 acikca yasakliyor).
+
+    Kuresel RNG kullaniyor; train tarafinda set_deterministic() tohumu
+    sabitledigi icin ayni tohum + ayni veri sirasi ayni sonucu verir.
+    """
+    B, _, H, W = x.shape
+    for eksen, boy in ((2, H), (3, W)):
+        uygula = torch.rand(B, device=x.device) < p
+        if not bool(uygula.any()):
+            continue
+        en_fazla = max(2, int(boy * frac))
+        for serit_no in range(2):                # PLAN 7.2: RASTGELE 1-2 serit
+            if serit_no == 1:                    # ikincisi %50 olasilikla
+                uygula = uygula & (torch.rand(B, device=x.device) < 0.5)
+                if not bool(uygula.any()):
+                    break
+            genislik = torch.randint(1, en_fazla, (B,), device=x.device)
+            bas = (torch.rand(B, device=x.device)
+                   * (boy - genislik).clamp(min=1).float()).long()
+            aralik = torch.arange(boy, device=x.device)[None, :]
+            serit = (aralik >= bas[:, None]) & (aralik < (bas + genislik)[:, None])
+            serit = serit & uygula[:, None]
+            m = serit[:, None, :, None] if eksen == 2 else serit[:, None, None, :]
+            x = x.masked_fill(m, 0.0)
+    return x
 
 
 def yukleyici(kume, batch=64, karistir=None, isci=4, pin=None):
@@ -304,51 +350,59 @@ def self_test(onbellek):
     print(f"  sinif agirliklari {[round(float(v), 3) for v in k.sinif_agirliklari()]}")
 
     x, y = k[0]
-    print(f"  ornek 0 -> girdi {tuple(x.shape)} {x.dtype}, etiket {y}")
-    assert x.shape == (3, GIRDI_H, GIRDI_W), f"girdi sekli {tuple(x.shape)}"
-    assert x.dtype == torch.float32
-    assert torch.isfinite(x).all()
-    print(f"  deger araligi [{x.min():.2f}, {x.max():.2f}]  ortalama {x.mean():+.3f}")
-    print(f"  [x] Sekil ve tip dogru")
+    print(f"  ornek 0 -> {tuple(x.shape)} {x.dtype}, etiket {y}")
+    assert x.dtype == torch.uint8, "Dataset uint8 dondurmeli (donusum GPU'da)"
+    assert x.shape == (3,) + k.sekil, f"beklenmeyen sekil {tuple(x.shape)}"
+    print(f"  [x] Dataset uint8 dondururuyor (PCIe trafigi 30 kat az)")
 
-    print(f"\n[3] Belirlenimcilik -- ayni indeks ayni tensoru vermeli")
+    print(f"\n[3] hazirla() -- olcekle + normalize et")
     print(cizgi)
-    a, _ = k[3]
-    b, _ = k[3]
-    print(f"  degerlendirme modunda maks fark: {(a-b).abs().max():.2e}")
-    assert torch.equal(a, b), "degerlendirme modu belirlenimci degil"
-    ke = OnbellekKumesi(onbellek, egitim=True)
-    a, _ = ke[3]
-    b, _ = ke[3]
-    print(f"  egitim modunda maks fark      : {(a-b).abs().max():.2e}  "
-          f"(maskeleme tohuma bagli -> 0 olmali)")
-    assert torch.equal(a, b), "egitim modu ayni indekste farkli sonuc verdi"
+    xb = torch.stack([k[i][0] for i in range(4)])
+    h = hazirla(xb, egitim=False)
+    print(f"  {tuple(xb.shape)} {xb.dtype}  ->  {tuple(h.shape)} {h.dtype}")
+    assert h.shape == (4, 3, GIRDI_H, GIRDI_W)
+    assert h.dtype == torch.float32 and torch.isfinite(h).all()
+    print(f"  deger araligi [{h.min():.2f}, {h.max():.2f}]  ortalama {h.mean():+.3f}")
+    bayt_uint8 = xb.numel()
+    bayt_float = h.numel() * 4
+    print(f"  batch basina: uint8 {bayt_uint8/1e6:.2f} MB  vs  "
+          f"float {bayt_float/1e6:.2f} MB   ({bayt_float/bayt_uint8:.0f}x)")
+    print(f"  [x] Donusum dogru")
+
+    print(f"\n[4] Belirlenimcilik")
+    print(cizgi)
+    assert torch.equal(k[3][0], k[3][0]), "Dataset belirlenimci degil"
+    a = hazirla(xb, egitim=False)
+    b = hazirla(xb, egitim=False)
+    print(f"  egitim=False, iki cagri arasi maks fark: {(a-b).abs().max():.2e}")
+    assert torch.equal(a, b), "degerlendirme yolu belirlenimci degil"
+    torch.manual_seed(0); c = hazirla(xb, egitim=True)
+    torch.manual_seed(0); d = hazirla(xb, egitim=True)
+    print(f"  egitim=True, ayni tohumla   : {(c-d).abs().max():.2e}")
+    assert torch.equal(c, d), "ayni tohum farkli maskeleme uretti"
     print(f"  [x] Tekrar uretilebilir")
 
-    print(f"\n[4] Maskeleme gercekten uyguluyor mu")
+    print(f"\n[5] Maskeleme")
     print(cizgi)
-    farkli = sum(1 for i in range(min(20, len(k)))
-                 if not torch.equal(k[i][0], ke[i][0]))
-    print(f"  20 ornegin {farkli}'i egitim modunda farkli (maskelenmis)")
-    assert farkli > 0, "maskeleme hic uygulanmiyor"
-    print(f"  [x] Maskeleme aktif")
+    torch.manual_seed(1)
+    m = hazirla(xb, egitim=True)
+    sifir_once = float((a == 0).float().mean())
+    sifir_sonra = float((m == 0).float().mean())
+    print(f"  sifir piksel orani: maskelemesiz %{100*sifir_once:.2f}  ->  "
+          f"maskeli %{100*sifir_sonra:.2f}")
+    assert not torch.equal(m, a), "maskeleme hic uygulanmiyor"
+    assert sifir_sonra > sifir_once, "maskeleme sifir bolge eklemedi"
+    print(f"  [x] Maskeleme aktif, degerlendirmede kapali")
 
-    print(f"\n[5] Gri secenegi")
+    print(f"\n[6] Gri secenegi")
     print(cizgi)
     kg = OnbellekKumesi(onbellek, renk="gri")
     xg, _ = kg[0]
-    print(f"  gri girdi {tuple(xg.shape)}  3 kanal ayni mi: "
-          f"{torch.allclose(xg[0]*0.229+0.485, xg[1]*0.224+0.456, atol=1e-3)}")
-    assert xg.shape == x.shape
+    print(f"  gri {tuple(xg.shape)} {xg.dtype}  3 kanal birebir ayni mi: "
+          f"{bool(torch.equal(xg[0], xg[1]) and torch.equal(xg[1], xg[2]))}")
+    assert torch.equal(xg[0], xg[1]), "gri modda kanallar ayni olmali"
+    assert not torch.equal(xg[0], x[0]) or k.renk == "gri"
     print(f"  [x] Calisiyor")
-
-    print(f"\n[6] DataLoader (isci=0)")
-    print(cizgi)
-    dl = yukleyici(k, batch=8, isci=0)
-    xb, yb = next(iter(dl))
-    print(f"  batch girdi {tuple(xb.shape)}  etiket {tuple(yb.shape)} {yb.tolist()}")
-    assert xb.shape == (min(8, len(k)), 3, GIRDI_H, GIRDI_W)
-    print(f"  [x] Batch uretiliyor")
 
     print(f"\n[7] Cok isci ile okuma  (h5py tutamaci her iscide ayri mi)")
     print(cizgi)
@@ -364,13 +418,15 @@ def self_test(onbellek):
     print(f"\n[8] Model ile uc uca")
     print(cizgi)
     from model import DASNet, count_parameters
-    m = DASNet(attention="sk", n_classes=3).eval()
+    net = DASNet(attention="sk", n_classes=3).eval()
+    xd, _ = next(iter(yukleyici(k, batch=8, karistir=False, isci=0)))
     with torch.no_grad():
-        cikti = m(xb)
-    print(f"  {tuple(xb.shape)} -> {tuple(cikti.shape)}  "
-          f"({count_parameters(m):,} parametre)")
-    assert cikti.shape == (xb.shape[0], 3)
-    print(f"  [x] Model onbellekten gelen girdiyi kabul ediyor")
+        cikti = net(hazirla(xd, egitim=False))
+    print(f"  onbellek {tuple(xd.shape)} -> hazirla -> model -> "
+          f"{tuple(cikti.shape)}")
+    print(f"  {count_parameters(net):,} parametre")
+    assert cikti.shape == (xd.shape[0], 3)
+    print(f"  [x] Onbellek -> hazirla -> model zinciri calisiyor")
 
     print(f"\n{'=' * 70}")
     print("TUM TESTLER GECTI.")
