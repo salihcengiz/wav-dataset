@@ -46,9 +46,12 @@ Tam kayıt: `SENTETIK_VERI_SONUCLARI.md`
 ### Aşama 2 — Gerçek saha verisi 🔄 DEVAM EDİYOR
 
 Faz 0 denetimi **bitti**, ön işleme hattı **yazıldı ve test edildi**.
-Sırada gerçek eğitim var.
+Sunucu ortamı ve yükleme hızı **ölçüldü** (Bölüm 5). Sırada spektrogram
+önbelleğinin kurulması ve gerçek eğitim var.
 
 **Taban çizgisi ölçüldü: macro-F1 0.771** (doğrusal sınıflandırıcı, 26 özellik)
+
+⚠️ **Engel:** Sunucuda `torch` kurulu değil — sorumluya soruldu (Bölüm 7).
 
 ---
 
@@ -142,30 +145,35 @@ macro-F1 0.771
    Satırlar fazlasıyla yedekli (21.318 dosya × ~14 bitişik kanal, hepsi aynı
    olayı görüyor) — alt örneklemle başlamak mantıklı.
 
-### ⏳ Ölçüm bekliyor: `src/sunucu_kontrol.py`
+### ✅ Ölçüldü (2026-08-26, `src/sunucu_kontrol.py`)
 
-İkisini de ölçerek cevaplayan script yazıldı ve yerelde sahte veriyle
-uçtan uca test edildi. **Sunucuda çalıştırılması bekleniyor.**
+**Cevap 1: GPU VAR (RTX 3090, 24 GB, CUDA 12.2) ama `torch` KURULU DEĞİL.**
+İmaj TensorFlow 2.14 ve GPU'yu görüyor. 8 CPU, 16.5 GB RAM, 646 GB boş disk.
+GPU **paylaşımlı** — ölçüm anında %85 kullanımda, 5.3 GB başkasında.
 
-JupyterLab'e `real_data.py` ve `sunucu_kontrol.py` yüklenir, sonra:
+**Cevap 2: 3.87 ms/satır** (gruplu okuma). Darboğaz STFT değil, **HDF5'ten
+okuma** (%49). Tam set tek süreçte 18.5 dk/epoch.
 
-```python
-import sunucu_kontrol
-sunucu_kontrol.tam_rapor()          # varsayilan kok: FENCE_DATA_NEW
-```
+**Seçilen alt örneklem: k=2** (dosya başına 2 kanal). 55.513 satır, ham
+verinin %19'u. Gerekçe: her dosyadan en az bir kanal alındığı için 21.318
+dosyanın hepsi kalıyor — **k çeşitliliği değil yedekliliği kesiyor.** Yan
+fayda: `noise` payı %6.8'den %17.8'e çıkıyor, dengesizlik büyük ölçüde
+çözülüyor.
 
-Dört bölüm üretir: **A)** torch/GPU/disk/RAM · **B)** CSV yedekliliği ve alt
-örneklem projeksiyonu · **C)** satır başına ms + epoch süresi tahmini
-(dağınık vs gruplu okuma, aşama kırılımı) · **D)** ön-hesaplanmış
-spektrogram önbelleğinin disk boyutu.
+Ayrıntı ve tüm sayılar: `GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 8.5
 
-Hiçbir şey yazmaz/silmez. Çıktısı geldiğinde alt örneklem oranı ve önbellek
-stratejisi **ölçüme dayanarak** seçilecek.
+### 🔄 Şimdi: spektrogram önbelleği (`src/onbellek_kur.py`)
 
-`alt_orneklem(df, kanal_basina=k)` fonksiyonu ölçümden sonra da kalacak —
-eğitim hattı da onu kullanacak. Kanalları rastgele değil **eşit aralıklı**
-seçiyor (olay merkezdeki kanalda güçlü, kenarlarda zayıf; rastgele seçim iki
-komşu kanalı alıp neredeyse birebir kopya iki örnek üretebilir).
+Ön-hesaplama kararı ölçüme dayanıyor: darboğaz I/O olduğu için her epoch'ta
+HDF5 okumak her epoch'a 4–19 dk ekler. Bir kez hesaplanıp **uint8** olarak
+diske yazılıyor (k=2 için 1.2 GB, RAM'e sığar).
+
+**torch gerektirmiyor** — numpy + h5py. Kurulum sorusu beklenmeden
+ilerleyebilir, üretilen önbelleği PyTorch da Keras da okur.
+
+Üç mod: `--kesif` (kanal seçim kuralını ölçümle doğrula) · varsayılan
+(önbelleği kur) · `--dogrula` (önbelleği kaynaktan yeniden hesaplayıp
+birebir karşılaştır).
 
 Sonra:
 - PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
@@ -220,6 +228,12 @@ yayılımı varsayılan olarak deterministik değil). `train.py` içinde
 
 ## 7. AÇIK SORULAR (sorumluya)
 
+0. ⚠️ **PyTorch kurulumu — teknik engel yok, İZİN sorusu.** GPU var (RTX
+   3090, CUDA 12.2), ağ açık (pypi + download.pytorch.org erişilebilir),
+   yani `pip install --user torch` çalışır. Keras'a taşıma zorunluluğu
+   kalktı. Sorulacak: paylaşılan imaja `--user` kurulum yapmamız uygun mu?
+   Ayrıca GPU paylaşımlı (ölçümde %85 doluydu) — eğitim saati için
+   koordinasyon gerekir mi?
 1. `.sdf.hdf5` dosyalarında `duration` ile örnek sayısı 2 kat uyuşmuyor
    (`.bin`'de sorun yok). Gerçek frekans nedir?
 2. `P`/`S` terminolojisi: dosya öznitelikleri `polarization: 2, port: 1`
@@ -286,17 +300,36 @@ VPN + tarayıcı. **Veri sunucudan çıkamaz, eğitim orada olmalı.**
 **Çalışma yöntemi:** kod yazılır → kullanıcı JupyterLab'de çalıştırır →
 çıktı sohbete yapıştırılır. **Kimlik bilgisi asla istenmez.**
 
-Dosya taşıma: sol paneldeki **yukarı ok (↑)** düğmesiyle yükleme. `.py`
-dosyasını yükleyip `import` etmek, hücreye yapıştırmaktan iyi — repodaki
-sürümle birebir aynı kalır.
+**Kod taşıma — `%%writefile` (2026-08-26'dan itibaren tercih edilen):**
+
+Dosya yüklemek yerine notebook hücresi dosyayı diske yazar:
 
 ```python
-import importlib, real_data
-importlib.reload(real_data)      # dosyayi tekrar yukledikten sonra
+%%writefile onbellek_kur.py
+<dosyanin tam icerigi>
 ```
 
-**Sunucuda henüz doğrulanmadı:** PyTorch var mı, GPU var mı, disk ne kadar.
-Bunlar gerçek eğitim hattının ilk adımı.
+sonra
+
+```python
+import importlib, real_data, onbellek_kur
+importlib.reload(onbellek_kur)   # icerigi degistikten sonra ZORUNLU
+```
+
+⚠️ **Hücreye fonksiyon TANIMI yapıştırılmaz.** Dosya diske yazılıp
+`import` edildiği sürece kalite düşmez — yükleme ile birebir aynı sonuç.
+Ama fonksiyonlar hücrede tanımlanırsa repodaki sürüm ile sunucuda gerçekten
+çalışan sürüm sessizce ayrışır; bu projenin temel ilkesi "tek kod yolu"
+(bkz. `real_data.py` docstring'i).
+
+⚠️ **Kabuk komutları `!` ile:** `!nvidia-smi`, `!python3 x.py`. Öneksiz
+yazılırsa `SyntaxError` verir.
+
+Alternatif: sol paneldeki **yukarı ok (↑)** ile yükleme (hâlâ çalışıyor).
+
+**Ölçüldü (2026-08-26):** Linux, Python 3.11, 8 CPU, 16.5 GB RAM, 646 GB boş
+disk, TensorFlow 2.14, numpy **1.26.4** (yerelde 2.4.4 — numpy 2'ye özgü
+API kullanma). **`torch` KURULU DEĞİL**, GPU teyit edilmedi.
 
 ---
 

@@ -84,11 +84,14 @@ except ImportError:
     except ImportError:
         rd = None
 
+# Satir secimi onbellek_kur.py'de tanimli -- orasi kalici hattin sahibi,
+# burasi bir kerelik teshis araci. Tek tanim, iki kopya yok.
+from onbellek_kur import KOK, _bicim, alt_orneklem  # noqa: E402
+
 
 # ---------------------------------------------------------------
 # VARSAYILANLAR
 # ---------------------------------------------------------------
-KOK = "/tf/start_training/RELATIONNET/FENCE_DATA_NEW"
 CSV_ADLARI = ("train_final.csv", "val_final.csv", "test_final.csv")
 
 CIZGI = "-" * 76
@@ -318,57 +321,8 @@ def csv_raporu(kok=KOK, csv_adlari=CSV_ADLARI):
     return tablolar
 
 
-def _bicim(yol):
-    """Dosya adindan bicimi cikarir: .bin.hdf5 / .sdf.hdf5 / diger."""
-    ad = str(yol).replace("\\", "/").rsplit("/", 1)[-1].lower()
-    for b in (".bin.hdf5", ".sdf.hdf5"):
-        if ad.endswith(b):
-            return b
-    nokta = ad.find(".")
-    return ad[nokta:] if nokta > 0 else "(uzantisiz)"
-
-
-def alt_orneklem(df, kanal_basina=2, yalniz_bin=True):
-    """
-    Her dosyadan en fazla `kanal_basina` kanal secer -- kanal eksenine
-    ESIT ARALIKLI yayarak. `yalniz_bin` ile .bin.hdf5 disindaki satirlar
-    elenir (Rapor 1.5: val/test'in %100'u bu bicimde, .sdf'nin olculebilir
-    bir karsiligi yok).
-
-    Neden esit aralikli, neden rastgele degil:
-        Kanallar fiber uzerindeki fiziksel konumlar ve bitisikler. Olayin
-        merkezi kanal araliginin ortasinda, kenar kanallarda sinyal
-        zayifliyor (Rapor 6.1: bos pencerelerin muhtemel sebebi bu).
-        Rastgele secim bazi dosyalarda iki komsu kanali secip birbirinin
-        neredeyse kopyasi iki ornek uretebilir. Esit aralikli secim hem
-        guclu hem zayif kanallardan ornek almayi garantiler -- model
-        kenar durumlari da gormus olur.
-
-    kanal_basina=None -> kanal elemesi yapilmaz (referans satiri icin).
-
-    NOT: Bu fonksiyon egitim hattinda da kullanilacak, olcumden sonra
-    silinmeyecek. Secim RASTGELE DEGIL (deterministik siralama), yani ayni
-    CSV her zaman ayni alt kumeyi verir -- tekrar uretilebilirlik icin.
-    """
-    if yalniz_bin and "file" in df.columns:
-        df = df[df["file"].astype(str).map(_bicim) == ".bin.hdf5"]
-
-    if kanal_basina is None or "channel" not in df.columns:
-        return df
-
-    parcalar = []
-    for _, grup in df.groupby("file", sort=False):
-        kanallar = np.sort(grup["channel"].unique())
-        if len(kanallar) <= kanal_basina:
-            secilen = kanallar
-        else:
-            # linspace: ilk ve son kanal DAHIL, aradakiler esit araliklarla
-            idx = np.linspace(0, len(kanallar) - 1, kanal_basina)
-            secilen = kanallar[np.unique(np.round(idx).astype(int))]
-        parcalar.append(grup[grup["channel"].isin(secilen)])
-    if not parcalar:
-        return df.iloc[:0]
-    return pd.concat(parcalar, ignore_index=True)
+# _bicim ve alt_orneklem ARTIK BURADA DEGIL -- onbellek_kur.py'de
+# (dosyanin basinda import ediliyor).
 
 
 # ---------------------------------------------------------------

@@ -440,6 +440,13 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
    de sessiz pencere filtresi uygulanmalı mı?
 7. **`climbing`/`cutting` ayrımı:** Mevcut RELATIONNET modelinin sınıf bazında
    performansı nedir? Bu iki sınıfı ayırabiliyor mu?
+8. ⚠️ **PyTorch kurulumu:** Sunucuda `torch` yok, imaj TensorFlow 2.14.
+   Modelimiz PyTorch (önceden eğitilmiş paket bir `state_dict`).
+   `pip install torch` serbest mi, sunucunun internet erişimi var mı?
+   Yoksa mimariyi Keras'a taşımak gerekir — 34.835 parametrelik küçük bir
+   model ama SK-Attention'ın yeniden yazılması demek.
+9. **GPU var mı?** TensorFlow cuDNN/cuBLAS eklentilerini kaydetmeye
+   çalışıyor (GPU'lu imaj işareti) ama görünür GPU olduğu doğrulanmadı.
 
 ---
 
@@ -453,15 +460,12 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
       ölçümümüzü yaptık
 
 ### Sırada — gerçek eğitim hattı
-- [~] Ortam kontrolü: sunucuda PyTorch var mı, GPU var mı
-      (veri sunucudan çıkamaz, eğitim orada olmalı)
-- [~] Yükleme hızı ölçümü: 293.469 satır × HDF5 açma maliyeti
-- [~] Alt örneklem stratejisi: satırlar fazlasıyla yedekli (21.318 dosya,
-      dosya başına ~14 bitişik kanal, hepsi aynı olayı görüyor)
-
-> Üçü de **`src/sunucu_kontrol.py`** ile ölçülecek. Script yazıldı ve
-> yerelde sahte veriyle test edildi; sunucuda çalıştırılması bekleniyor.
-> Çalıştırma talimatı: `DURUM.md` Bölüm 5.
+- [x] Ortam kontrolü → **torch YOK**, GPU teyit edilmeli (Bölüm 8.5)
+- [x] Yükleme hızı ölçümü → 3.87 ms/satır gruplu (Bölüm 8.5)
+- [x] Alt örneklem stratejisi → **k=2** seçildi (Bölüm 8.5)
+- [ ] `--kesif`: kenar/iç kanal boşluk oranı — kanal seçim kuralını doğrula
+- [ ] Spektrogram önbelleği kur (`src/onbellek_kur.py`) + doğrula
+- [ ] **PyTorch kurulumu** — sorumluya sorulacak (Bölüm 7, madde 8)
 
 - [ ] PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
 - [ ] `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan
@@ -494,6 +498,128 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
 - [ ] Pencere 7.5 s @ 2000 Hz. Sentetik model 10 s ile eğitilmişti; spektrogram
       224×320'ye ölçeklendiği için aktarımı bozmuyor, sadece piksel başına
       düşen süre değişiyor (31 ms → 23 ms)
+
+---
+
+## 8.5 SUNUCU ORTAMI VE YÜKLEME ÖLÇÜMÜ (2026-08-26)
+
+`src/sunucu_kontrol.py` ile sunucuda ölçüldü.
+
+### Ortam
+
+| | |
+|---|---|
+| İşletim sistemi | Linux 5.15, Python 3.11 |
+| CPU | 8 (8'i kullanılabilir) |
+| RAM | 16.5 GB |
+| Disk boş | **646 GB** |
+| **GPU** | ✅ **NVIDIA RTX 3090, 24 GB** (sürücü 535.183, CUDA 12.2) |
+| **PyTorch** | ❌ **KURULU DEĞİL** |
+| TensorFlow | 2.14.0 — GPU'yu görüyor |
+| numpy / pandas / h5py | 1.26.4 / 3.0.3 / 3.9.0 |
+
+⚠️ **En kritik bulgu: `torch` yok.** GPU var ve TensorFlow onu kullanıyor
+(`list_physical_devices('GPU')` → `GPU:0`), ama bizim modelimiz PyTorch.
+
+⚠️ **GPU paylaşımlı.** Ölçüm anında %85 kullanımda ve 5.3 GB dolu, süreç
+tablosu boş — başka bir konteyner eğitim yapıyor. Bellek bizim için sorun
+değil (34.835 parametre), ama hesap kuyruğu paylaşılıyor.
+
+**Ağ erişimi ölçüldü — github, pypi ve download.pytorch.org üçü de
+erişilebilir.** Yani `pip install` teknik olarak mümkün; Keras'a taşıma
+zorunluluğu **ortadan kalktı**.
+
+**Kurulacaksa CUDA 12.x tekerleği gerekir:**
+`pip install --user torch torchvision --index-url https://download.pytorch.org/whl/cu121`
+
+⚠️ `--user` bilinçli: bu imaj ekip tarafından paylaşılıyor ve TensorFlow
+2.14 `numpy<2` istiyor. Sistem `site-packages`'ına yazmak ekibin ortamını
+bozabilir; `~/.local` altına kurmak geri alınabilir ve izole.
+Kurulumdan sonra `numpy.__version__` hâlâ 1.26.4 mü, TensorFlow hâlâ
+import ediliyor mu **doğrulanmalı**.
+
+⚠️ numpy sunucuda **1.26.4**, yerelde 2.4.4. `real_data.py` sadece kararlı
+API kullanıyor, sorun çıkmadı — ama yeni kod yazarken numpy 2'ye özgü
+API'lerden kaçınılmalı.
+
+### Yükleme hızı
+
+| Ölçüm | Satır başına |
+|---|---|
+| Dağınık okuma (her satırda aç-kapa) | **6.50 ms** |
+| Gruplu okuma (dosya nesnesi paylaşımlı) | **3.87 ms** |
+
+Aşama kırılımı (gruplu): dilim okuma + `hypot` **%49** · STFT %22 ·
+pencere/boş/normalize %18 · dosya açma %4.
+
+**Darboğaz STFT değil, HDF5'ten okuma.** Yani `num_workers` artırmak tek
+başına yetmez; asıl kazanç ön-hesaplamada.
+
+Tek süreçli epoch süresi: k=2 için 3.6 dk, tam set için 18.5 dk.
+
+### Boş pencere oranı — üçüncü ölçüm
+
+Bu ölçümde **%19.0 ve %16.7** çıktı (Bölüm 5.4'te ~%27 idi). Fark beklenen:
+bu örneklem `noise` sınıfını da içeriyor ve `noise`'da boş oran %0.
+
+### Yedeklilik ve alt örneklem
+
+train: 293.469 satır / **21.318 dosya** / dosya başına ortalama 10.9 kanal
+(medyan 8, min 1, **maks 901**).
+
+⚠️ Bir dosya **901 kanal** taşıyor — muhtemelen tüm fiberi etiketleyen bir
+`noise` kaydı. Tek başına aşırı ağırlık yapabilir; alt örneklem bunu da
+zaten sınırlıyor (k kanal alınıyor).
+
+⚠️ val/test'te kanallar **bitişik değil** (aralıklar 1, 3, 4, 18, 53) —
+train'de bitişik. val/test dosyaları elden geçirilmiş alt kümeler gibi
+görünüyor.
+
+**Alt örneklem sınıf dengesini düzeltiyor** (beklenmeyen yan fayda):
+
+| k | satır | oran | noise payı |
+|---|---|---|---|
+| hepsi | 286.941 | %97.8 | %6.8 |
+| 8 | 178.352 | %60.8 | %8.7 |
+| 4 | 102.620 | %35.0 | %11.5 |
+| **2** | **55.513** | **%18.9** | **%17.8** |
+| 1 | 28.909 | %9.9 | %16.9 |
+
+`noise` kayıtları kanal başına daha çok pencere taşıyor (2.4 vs climbing
+1.2), o yüzden kanal budandıkça oranı yükseliyor. Bölüm 3'teki "`noise`
+train'in %8.4'ü — dengesiz" uyarısı k=2'de büyük ölçüde çözülüyor.
+
+**Asıl gerekçe:** `alt_orneklem` her dosyadan **en az bir kanal** aldığı
+için k ne olursa olsun 21.318 dosyanın hepsi kalıyor. **k çeşitliliği
+değil yedekliliği kesiyor.** Bağımsız birim dosya olduğuna göre k=2 bilgi
+kaybı olmadan maliyeti %19'a indiriyor.
+
+### 🐛 Düzeltilen hata — kanal seçimi uçları seçiyordu
+
+`alt_orneklem`'in ilk sürümü `linspace(0, n-1, k)` kullanıyordu, yani k=2
+için **ilk ve son kanalı**. Gerekçesi "hem güçlü hem zayıf kanaldan örnek
+al" idi — ama bu gerekçe Bölüm 6.1 ile çelişiyor: kenar kanallar sinyalin
+zayıfladığı yer, ve zayıf pencereler zaten `bos_mu` ile eleniyor. Yani
+k=2'de sistematik olarak **en kötü iki kanal** seçiliyordu.
+
+Yeni kural: `linspace(0, n-1, k+2)[1:-1]` — uçlar dışarıda, seçilenler
+aralık içine eşit dağılıyor. (n=14 için k=1 → [7], k=2 → [4, 9].)
+
+Bu kuralın gerekçesi hâlâ bir **tahmin**; `onbellek_kur.py --kesif`
+kenar/iç boşluk oranını ölçüp doğrulayacak.
+
+### Verilen kararlar
+
+| Konu | Karar | Gerekçe |
+|---|---|---|
+| Ön-hesaplama | **Yapılacak** | Her epoch'ta okumak 4–19 dk ekler; darboğaz I/O |
+| Önbellek biçimi | **uint8, 129×231** | dB [-80,0] → 0.31 dB adım. Sentetik model zaten 8-bit PNG görüyordu |
+| Ölçekleme | Eğitim anında, önbellekte değil | 224×320 saklamak boyutu 2.4 kat artırır, bilgi eklemez |
+| Alt örneklem (train/val) | **k=2** | Sınıf dengesi en iyi, maliyet %19, dosya çeşitliliği %100 |
+| Alt örneklem (test) | **k=0 (hepsi)** | Nihai ölçüm; hız kaygısı yok |
+| Çerçeve | Önbellek **çerçeve-bağımsız** | torch kurulumu beklenmeden üretilebilir |
+
+Önbellek boyutu: k=2 → **1.2 GB** (16.5 GB RAM'e rahat sığar).
 
 ---
 
