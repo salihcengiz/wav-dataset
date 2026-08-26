@@ -38,9 +38,10 @@ GPU'da (ya da transform'da) yapilir; orada bedava.
 
 === NEDEN torch YOK ===
 
-Sunucuda torch KURULU DEGIL (olculdu, 2026-08-26). Bu script yalnizca
-numpy + h5py kullanir, dolayisiyla torch kurulumu beklenmeden calistirilabilir.
-Uretilen onbellek cerceve-bagimsizdir: PyTorch da Keras da okuyabilir.
+Sunucuda torch KURULU DEGIL (olculdu, 2026-08-26; GPU var -- RTX 3090 --
+ama torch yok). Bu script yalnizca numpy + h5py kullanir, dolayisiyla
+torch kurulumu beklenmeden calistirilabilir. Uretilen onbellek
+cerceve-bagimsizdir: PyTorch da Keras da okuyabilir.
 
 === KULLANIM ===
 
@@ -63,7 +64,9 @@ JupyterLab'de:
 
 === BAGIMLILIK ===
 
-numpy + pandas + h5py + real_data.py + sunucu_kontrol.py (alt_orneklem icin).
+numpy + pandas + h5py + real_data.py. Baska hicbir sey -- ozellikle torch
+degil. Bu modul satir seciminin (alt_orneklem) de sahibidir;
+sunucu_kontrol.py onu buradan import eder.
 """
 import sys
 import time
@@ -209,7 +212,7 @@ def uint8_to_db(u, top_db=rd.TOP_DB):
 # ---------------------------------------------------------------
 # 1) KESIF -- kenar kanallar gercekten daha mi bos?
 # ---------------------------------------------------------------
-def kesif(kok=KOK, csv="train_final.csv", n_dosya=300, tohum=42):
+def kesif(kok=KOK, csv="train_final.csv", n_dosya=800, tohum=42):
     """
     Bos pencere oraninin KANAL KONUMUNA gore degisip degismedigini olcer.
 
@@ -225,15 +228,38 @@ def kesif(kok=KOK, csv="train_final.csv", n_dosya=300, tohum=42):
 
     Projede kural: olcmeden karar verilmez. Bu fonksiyon o olcumu yapar.
 
-    YONTEM
-    ------
+    YONTEM -- VE NEDEN MARJINAL TABLO YETMEZ
+    ----------------------------------------
     En az 3 kanali olan dosyalardan rastgele n_dosya secilir, HER kanali
     okunur (alt orneklem YOK -- olcecegimiz sey zaten kanal secimi).
     Her satir icin kanalin dosya icindeki goreli konumu hesaplanir:
 
         konum = sira / (kanal_sayisi - 1)      0.0 = ilk, 1.0 = son
 
-    Sonra bos pencere orani konuma gore gruplanir.
+    Ilk surum burada durup "uc kanallarin bos orani vs ic kanallarin bos
+    orani" diye tek bir marjinal karsilastirma yapiyordu. BU YANLIS, cunki
+    iki karistirici var:
+
+      1. KANAL SAYISI. 3 kanalli bir dosya yalnizca UC kovalarina katki
+         verir, ic kovalara giremez. Yani kovalar ayni dosyalari
+         ornekleMIyor.
+      2. SINIF. noise'da bos orani ~%1, cutting'de ~%25. Az kanalli
+         dosyalar agirlikli noise ise, "uclar daha az bos" sonucu
+         tamamen bundan dogar -- konumla ilgisi olmaz.
+
+    Bu, projenin bir kez dustugu hatanin aynisi (DURUM.md Bolum 6, "tek
+    degiskenli F testine guvenmek"): kontrolsuz marjinal karsilastirmadan
+    sonuc cikarmak.
+
+    COZUM -- ESLESTIRILMIS TEST (Bolum B):
+        Her dosyada KENDI uc kanallarinin bos orani ile KENDI ic
+        kanallarinin bos orani ayri hesaplanip farki alinir. Ayni dosya =
+        ayni sinif, ayni kanal sayisi, ayni kayit kosullari. Iki
+        karistirici da tanim geregi sabitlenir. Sonra bu farklarin
+        ortalamasi sifirdan anlamli olcude farkli mi diye bakilir.
+
+    Bolum C (sinif icinde ayri ayri) ve Bolum D (yonlu degisim var mi)
+    ikinci ve ucuncu kontrollerdir.
     """
     _baslik(f"KESIF -- bos pencere orani kanal konumuna gore degisiyor mu?")
     if h5py is None:
@@ -268,7 +294,11 @@ def kesif(kok=KOK, csv="train_final.csv", n_dosya=300, tohum=42):
                     continue
                 s = rd.pencereye_oturt(s, rd.PENCERE)
                 kayitlar.append({
+                    "dosya": dosya,
                     "konum": sira[r.channel] / (n_k - 1),
+                    "sira": sira[r.channel],          # bastan kacinci
+                    "ters_sira": n_k - 1 - sira[r.channel],   # sondan
+                    "n_kanal": n_k,
                     "sinif": r.event,
                     "bos": bool(rd.bos_mu(s)),
                 })
@@ -282,40 +312,100 @@ def kesif(kok=KOK, csv="train_final.csv", n_dosya=300, tohum=42):
     print(f"  okundu: {len(k):,} pencere, {sure:.0f} s "
           f"({1000 * sure / len(k):.2f} ms/satir)")
 
-    _alt("Bos pencere orani -- kanal konumuna gore")
+    k["uc_mu"] = (k["konum"] <= 0.001) | (k["konum"] >= 0.999)
+
+    # --- A) HAM (marjinal) tablo -- karistiricilar kontrol EDILMEDI ---
+    _alt("A) HAM tablo -- bos orani konuma gore  (KARISTIRICI VAR, altta)")
     kova = pd.cut(k["konum"], bins=[-.01, .001, .25, .5, .75, .999, 1.01],
                   labels=["ILK (uc)", "0-25%", "25-50%", "50-75%",
                           "75-100%", "SON (uc)"])
-    tablo = k.groupby(kova, observed=False)["bos"].agg(["size", "mean"])
-    print(f"  {'konum':<12}{'pencere':>10}{'bos orani':>12}")
+    tablo = k.groupby(kova, observed=False).agg(
+        pencere=("bos", "size"), bos=("bos", "mean"),
+        ort_kanal=("n_kanal", "mean"))
+    sinif_pay = pd.crosstab(kova, k["sinif"], normalize="index")
+    print(f"  {'konum':<12}{'pencere':>9}{'bos':>8}{'ort_n_kanal':>13}"
+          f"   sinif karisimi")
     for ad, sat in tablo.iterrows():
-        if sat["size"] == 0:
+        if sat["pencere"] == 0:
             continue
-        print(f"  {str(ad):<12}{int(sat['size']):>10,}{sat['mean']:>11.1%}")
+        pay = "  ".join(f"{s[:4]} {sinif_pay.loc[ad, s]:.0%}"
+                        for s in sinif_pay.columns)
+        print(f"  {str(ad):<12}{int(sat['pencere']):>9,}{sat['bos']:>8.1%}"
+              f"{sat['ort_kanal']:>13.1f}   {pay}")
 
-    uc = k[(k["konum"] <= 0.001) | (k["konum"] >= 0.999)]["bos"]
-    ic = k[(k["konum"] > 0.001) & (k["konum"] < 0.999)]["bos"]
-    _alt("UC vs IC")
-    print(f"  uc kanallar : {len(uc):>7,} pencere, bos orani {uc.mean():.1%}")
-    print(f"  ic kanallar : {len(ic):>7,} pencere, bos orani {ic.mean():.1%}")
-    if len(uc) > 30 and len(ic) > 30:
-        fark = uc.mean() - ic.mean()
-        # iki oran farkinin standart hatasi
-        se = float(np.sqrt(uc.mean() * (1 - uc.mean()) / len(uc)
-                           + ic.mean() * (1 - ic.mean()) / len(ic)))
-        print(f"  fark        : {fark:+.1%}  (standart hata {se:.1%}, "
-              f"z = {fark / se if se else 0:+.1f})")
-        if fark > 2 * se:
-            print(f"  -> UC KANALLAR GERCEKTEN DAHA BOS. Rapor 6.1'in tahmini")
-            print(f"     dogrulandi; alt_orneklem'in uclari dislamasi yerinde.")
-        elif fark < -2 * se:
-            print(f"  -> Uc kanallar daha AZ bos. Tahmin YANLIS cikti,")
-            print(f"     alt_orneklem'deki uc dislama kurali kaldirilmali.")
+    print(f"\n  ^ 'ort_n_kanal' ve 'sinif karisimi' sutunlari KOVADAN KOVAYA")
+    print(f"    degisiyorsa bu tablo yaniltir: 3 kanalli bir dosya yalnizca")
+    print(f"    UC kovalarina girer, ic kovalara HIC giremez. Ayrica noise'un")
+    print(f"    bos orani ~%1, cutting'inki ~%25 -- kovalarin sinif karisimi")
+    print(f"    farkliysa olculen sey konum degil SINIF olur.")
+
+    # --- B) ESLESTIRILMIS dosya-ici karsilastirma  <-- ASIL TEST ---
+    _alt("B) ESLESTIRILMIS test -- her dosya KENDI ucu ile KENDI ici")
+    print(f"  Her dosyada uc kanallarin bos orani ile ic kanallarin bos orani")
+    print(f"  ayri hesaplanip FARKI aliniyor. Ayni dosya = ayni sinif, ayni")
+    print(f"  kanal sayisi, ayni kayit kosullari -> karistiricilar sabit.")
+
+    genis = k[k["n_kanal"] >= 5]
+    farklar = []
+    for dosya, g in genis.groupby("dosya", sort=False):
+        u, i = g[g["uc_mu"]]["bos"], g[~g["uc_mu"]]["bos"]
+        if len(u) and len(i):
+            farklar.append(u.mean() - i.mean())
+    farklar = np.array(farklar)
+
+    if len(farklar) < 20:
+        print(f"\n  Yeterli dosya yok ({len(farklar)}). --n-dosya artirilmali.")
+    else:
+        ort = float(farklar.mean())
+        se = float(farklar.std(ddof=1) / np.sqrt(len(farklar)))
+        t = ort / se if se else 0.0
+        arti = int((farklar > 0).sum())
+        eksi = int((farklar < 0).sum())
+        print(f"\n  degerlendirilen dosya : {len(farklar):,} "
+              f"(>=5 kanalli, hem uc hem ic satiri olan)")
+        print(f"  ortalama fark (uc-ic) : {ort:+.1%}  "
+              f"(standart hata {se:.1%}, t = {t:+.1f})")
+        print(f"  isaret sayimi         : uc daha bos {arti:,} dosya  |  "
+              f"ic daha bos {eksi:,} dosya  |  esit {len(farklar)-arti-eksi:,}")
+
+        if abs(t) < 2:
+            karar = ("FARK YOK. Uc kanallar ile ic kanallar arasinda bos "
+                     "orani farki\n     yok. Rapor 6.1'in tahmini "
+                     "DOGRULANMADI -- uc dislama kurali\n     gereksiz.")
+        elif t > 0:
+            karar = ("UC KANALLAR DAHA BOS. Rapor 6.1'in tahmini dogrulandi,\n"
+                     "     alt_orneklem'in uclari dislamasi yerinde.")
         else:
-            print(f"  -> Fark gurultunun icinde. Uc dislama kurali zararsiz")
-            print(f"     ama gerekcesi olculmedi; rapora oyle yazilmali.")
+            karar = ("UC KANALLAR DAHA AZ BOS. Tahminin TERSI cikti;\n"
+                     "     uc dislama kurali ZARARLI, kaldirilmali.")
+        print(f"\n  -> {karar}")
 
-    _alt("Bos pencere orani -- sinifa gore  (Rapor 5.4 ile karsilastir)")
+    # --- C) Sinif icinde ayri ayri (ikinci kontrol) ---
+    _alt("C) Sinif icinde uc vs ic  (>=5 kanalli dosyalar)")
+    print(f"  {'sinif':<12}{'uc n':>8}{'uc bos':>9}{'ic n':>8}{'ic bos':>9}"
+          f"{'fark':>9}")
+    for sinif, g in genis.groupby("sinif"):
+        u, i = g[g["uc_mu"]]["bos"], g[~g["uc_mu"]]["bos"]
+        if len(u) < 20 or len(i) < 20:
+            continue
+        print(f"  {str(sinif):<12}{len(u):>8,}{u.mean():>9.1%}"
+              f"{len(i):>8,}{i.mean():>9.1%}{u.mean()-i.mean():>+9.1%}")
+
+    # --- D) Yon var mi? Bastan/sondan mutlak sira ---
+    _alt("D) Mutlak sira -- bos orani kanal ekseninde YONLU mu degisiyor?")
+    print(f"  (A'daki tablo tek yonlu artiyorsa, mesele 'uc vs ic' degil")
+    print(f"   'dusuk kanal vs yuksek kanal' olabilir)")
+    print(f"  {'sira':>6}{'bastan n':>10}{'bastan bos':>12}"
+          f"{'sondan n':>10}{'sondan bos':>12}")
+    for s in range(6):
+        b = genis[genis["sira"] == s]["bos"]
+        t_ = genis[genis["ters_sira"] == s]["bos"]
+        if len(b) < 20 and len(t_) < 20:
+            continue
+        print(f"  {s:>6}{len(b):>10,}{b.mean():>12.1%}"
+              f"{len(t_):>10,}{t_.mean():>12.1%}")
+
+    _alt("E) Bos pencere orani -- sinifa gore  (Rapor 5.4 ile karsilastir)")
     for sinif, sat in k.groupby("sinif")["bos"].agg(["size", "mean"]).iterrows():
         print(f"  {str(sinif):<12}{int(sat['size']):>10,}{sat['mean']:>11.1%}")
     print(f"  {'TOPLAM':<12}{len(k):>10,}{k['bos'].mean():>11.1%}")
@@ -589,7 +679,7 @@ if __name__ == "__main__":
     ap.add_argument("--ustune-yaz", action="store_true")
     ap.add_argument("--kesif", action="store_true",
                     help="once bunu calistir: kanal konumu / bos oran olcumu")
-    ap.add_argument("--n-dosya", type=int, default=300, help="kesif ornek boyu")
+    ap.add_argument("--n-dosya", type=int, default=800, help="kesif ornek boyu")
     ap.add_argument("--dogrula", default=None, help="kurulmus onbellegi dogrula")
     a = ap.parse_args()
 
