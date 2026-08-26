@@ -615,11 +615,42 @@ kenar/iç boşluk oranını ölçüp doğrulayacak.
 | Ön-hesaplama | **Yapılacak** | Her epoch'ta okumak 4–19 dk ekler; darboğaz I/O |
 | Önbellek biçimi | **uint8, 129×231** | dB [-80,0] → 0.31 dB adım. Sentetik model zaten 8-bit PNG görüyordu |
 | Ölçekleme | Eğitim anında, önbellekte değil | 224×320 saklamak boyutu 2.4 kat artırır, bilgi eklemez |
-| Alt örneklem (train/val) | **k=2** | Sınıf dengesi en iyi, maliyet %19, dosya çeşitliliği %100 |
-| Alt örneklem (test) | **k=0 (hepsi)** | Nihai ölçüm; hız kaygısı yok |
+| **Alt örneklem** | **k=0 — tüm satırlar** | Aşağıda |
 | Çerçeve | Önbellek **çerçeve-bağımsız** | torch kurulumu beklenmeden üretilebilir |
 
-Önbellek boyutu: k=2 → **1.2 GB** (16.5 GB RAM'e rahat sığar).
+Önbellek boyutu: **6.2 GB** (disk 646 GB boş), kurulum ~18.5 dk tek seferlik.
+
+### Alt örneklem kararı — k=0, ve nedeni
+
+İlk öneri k=2 idi. Gerekçesi şuydu: satırlar yedekli (aynı olay ~14 komşu
+kanaldan kaydedilmiş) ve tüm satırlar kullanılırsa her dosya **kanal sayısı
+kadar oy** kullanır — 901 kanallı bir dosya, 1 kanallı bir dosyadan 901 kat
+fazla etkiler. k=2 her kayda eşit ağırlık verir ve `noise` payını %6.8'den
+%17.8'e çıkarır.
+
+**Karar k=0 (tüm satırlar) yönünde verildi** (kullanıcı kararı, 2026-08-26).
+Karşı argüman geçerli: komşu kanallar birebir kopya değil — farklı mesafe,
+farklı SNR — ve doğal bir veri artırma işlevi görüyorlar. "Yer yok" gerekçesi
+de zayıftı: 6.2 GB, 646 GB boş diskte hiçbir şey.
+
+**Mimari sonucu — bu karar hattı daha esnek yaptı.** Alt örneklem artık
+kurulum kararı değil, **eğitim anı parametresi**:
+
+```
+onbellek_alt_kume(onbellek, kanal_basina=2)   -> k=2 alt kumesinin indeksleri
+onbellek_alt_kume(onbellek, kanal_basina=None) -> tum veri
+```
+
+Aynı önbellekten her k sıfır maliyetle çıkıyor; yeniden kurulum gerekmiyor.
+Doğrulandı: eğitim anındaki seçim, kurulum anındaki seçimle birebir aynı
+satırları veriyor.
+
+Böylece "eşit ağırlık" endişesi kaybolmuş değil — sadece çözümü veri atmak
+yerine **eğitim anında örnekleme/ağırlıklandırma** oldu. Bu, bilgi kaybı
+olmadan aynı sorunu çözer.
+
+⚠️ Alt örneklem kullanılırsa kaç konfigürasyon denendiği rapora yazılmalı
+(proje kuralı: test setine bakarak hiperparametre seçilmez).
 
 ---
 

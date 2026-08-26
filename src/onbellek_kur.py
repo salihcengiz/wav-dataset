@@ -25,9 +25,21 @@ demek. Sentetik asamada model zaten 8-bit viridis PNG goruyordu -- yani
 onceden egitilmis modelin egitildigi hassasiyet TAM OLARAK bu. Kuantalama
 yeni bir kayip getirmiyor, sadece boyutu 4'e boluyor.
 
-    k=2 icin : 1.2 GB   <- RAM'e rahat sigar
+    k=2 icin : 1.2 GB
     k=4 icin : 2.2 GB
-    hepsi    : 6.2 GB
+    hepsi    : 6.2 GB   <- SECILEN
+
+=== NEDEN TUM SATIRLAR (k=0) ===
+
+Onbellek "ham malzeme" olarak kuruluyor: hicbir satir atilmiyor (bos
+pencereler haric -- onlar zaten sinyal tasimiyor).
+
+Boylece alt orneklem bir KURULUM karari degil, bir EGITIM parametresi
+olur. onbellek_alt_kume() ayni onbellekten k=2, k=4 veya tum veriyi
+sifir maliyetle secebiliyor. Kurulum aninda budasaydik her k degisikligi
+18 dakikalik yeniden kurulum demek olurdu.
+
+Bedeli: 6.2 GB (disk 646 GB bos) ve tek seferlik ~18.5 dk. Ucuz.
 
 === NEDEN 129x231 (224x320 DEGIL) ===
 
@@ -48,19 +60,22 @@ cerceve-bagimsizdir: PyTorch da Keras da okuyabilir.
     # 1) ONCE KESIF -- k'yi olcumle sec (~1 dk)
     python onbellek_kur.py --kesif
 
-    # 2) ONBELLEGI KUR
-    python onbellek_kur.py --csv train_final.csv --k 2
-    python onbellek_kur.py --csv val_final.csv   --k 2
-    python onbellek_kur.py --csv test_final.csv  --k 0     # 0 = hepsi
+    # 2) ONBELLEGI KUR  (k=0 = tum satirlar; alt orneklem egitim aninda)
+    python onbellek_kur.py --csv train_final.csv --k 0
+    python onbellek_kur.py --csv val_final.csv   --k 0
+    python onbellek_kur.py --csv test_final.csv  --k 0
 
     # 3) DOGRULA -- onbellek gercekten hattin urettigiyle ayni mi
-    python onbellek_kur.py --dogrula onbellek_train_final_k2.h5
+    python onbellek_kur.py --dogrula onbellek_train_final_k0.h5
 
 JupyterLab'de:
 
     import onbellek_kur
-    onbellek_kur.kesif()
-    onbellek_kur.kur(csv="train_final.csv", k=2)
+    onbellek_kur.kur(csv="train_final.csv")          # k=0 varsayilan
+    onbellek_kur.dogrula("onbellek_train_final_k0.h5")
+
+    # egitim aninda alt orneklem (yeniden kurulum YOK):
+    idx = onbellek_kur.onbellek_alt_kume("onbellek_train_final_k0.h5", 2)
 
 === BAGIMLILIK ===
 
@@ -415,7 +430,7 @@ def kesif(kok=KOK, csv="train_final.csv", n_dosya=800, tohum=42):
 # ---------------------------------------------------------------
 # 2) ONBELLEK KURULUMU
 # ---------------------------------------------------------------
-def kur(kok=KOK, csv="train_final.csv", k=2, cikti=None, ustune_yaz=False,
+def kur(kok=KOK, csv="train_final.csv", k=0, cikti=None, ustune_yaz=False,
         blok=512, ilerleme=1000):
     """
     Secilen satirlari spektrograma cevirip uint8 olarak tek bir HDF5'e yazar.
@@ -572,6 +587,67 @@ def kur(kok=KOK, csv="train_final.csv", k=2, cikti=None, ustune_yaz=False,
 
 
 # ---------------------------------------------------------------
+# 2b) ONBELLEK UZERINDE ALT ORNEKLEM  (egitim ANINDA, yeniden kurmadan)
+# ---------------------------------------------------------------
+def onbellek_alt_kume(onbellek, kanal_basina=2, uclari_disla=True):
+    """
+    Kurulmus bir onbellekten "dosya basina k kanal" alt kumesinin
+    INDEKSLERINI dondurur. Onbellegi yeniden kurmaya gerek yok.
+
+    NEDEN BU VAR
+    ------------
+    Onbellek TUM satirlarla kuruluyor (k=0). Boylece onbellek "ham malzeme"
+    olur ve alt orneklem bir EGITIM parametresine doner:
+
+        tum veri  -> onbellek_alt_kume(h5, kanal_basina=None)
+        k=2       -> onbellek_alt_kume(h5, kanal_basina=2)
+        k=4       -> onbellek_alt_kume(h5, kanal_basina=4)
+
+    Uc secenegin ucu de AYNI onbellekten, yeniden hesaplama olmadan cikar.
+    Alt orneklemi kurulum aninda yapsaydik her k degisikligi 18 dakikalik
+    yeniden kurulum demek olurdu.
+
+    Not: burada kanal siralamasi onbellekteki kayitlardan hesaplaniyor,
+    CSV'den degil. Bos pencereler zaten elendigi icin bir dosyanin
+    onbellekteki kanallari CSV'dekinden AZ olabilir -- secim hayatta kalan
+    kanallar uzerinden yapilir, ki dogrusu da bu.
+
+    uclari_disla: kanal araliginin uclarini dislayip dislamayacagi.
+        Bu kuralin gerekcesi HENUZ OLCUMLE DOGRULANMADI (bkz. kesif()).
+        Alt orneklem kullanilmadigi surece (kanal_basina=None) etkisiz.
+
+    Donen: np.ndarray, artan sirali indeksler
+    """
+    kapat = False
+    if not hasattr(onbellek, "keys"):
+        onbellek = h5py.File(str(onbellek), "r")
+        kapat = True
+    try:
+        if kanal_basina is None or kanal_basina <= 0:
+            return np.arange(onbellek["spektrogram"].shape[0])
+
+        dosya = onbellek["dosya_idx"][:]
+        kanal = onbellek["kanal"][:]
+        secilen = []
+        for d in np.unique(dosya):
+            yer = np.flatnonzero(dosya == d)
+            kanallar = np.unique(kanal[yer])
+            if len(kanallar) <= kanal_basina:
+                tut = kanallar
+            elif uclari_disla:
+                idx = np.linspace(0, len(kanallar) - 1, kanal_basina + 2)[1:-1]
+                tut = kanallar[np.unique(np.round(idx).astype(int))]
+            else:
+                idx = np.linspace(0, len(kanallar) - 1, kanal_basina)
+                tut = kanallar[np.unique(np.round(idx).astype(int))]
+            secilen.append(yer[np.isin(kanal[yer], tut)])
+        return np.sort(np.concatenate(secilen)) if secilen else np.array([], int)
+    finally:
+        if kapat:
+            onbellek.close()
+
+
+# ---------------------------------------------------------------
 # 3) DOGRULAMA
 # ---------------------------------------------------------------
 def dogrula(onbellek, n=20, tohum=0):
@@ -673,8 +749,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Spektrogram onbellegi")
     ap.add_argument("--kok", default=KOK)
     ap.add_argument("--csv", default="train_final.csv")
-    ap.add_argument("--k", type=int, default=2,
-                    help="dosya basina kanal (0 = hepsi)")
+    ap.add_argument("--k", type=int, default=0,
+                    help="dosya basina kanal (0 = hepsi -- VARSAYILAN)")
     ap.add_argument("--cikti", default=None)
     ap.add_argument("--ustune-yaz", action="store_true")
     ap.add_argument("--kesif", action="store_true",

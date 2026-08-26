@@ -154,11 +154,11 @@ GPU **paylaşımlı** — ölçüm anında %85 kullanımda, 5.3 GB başkasında.
 **Cevap 2: 3.87 ms/satır** (gruplu okuma). Darboğaz STFT değil, **HDF5'ten
 okuma** (%49). Tam set tek süreçte 18.5 dk/epoch.
 
-**Seçilen alt örneklem: k=2** (dosya başına 2 kanal). 55.513 satır, ham
-verinin %19'u. Gerekçe: her dosyadan en az bir kanal alındığı için 21.318
-dosyanın hepsi kalıyor — **k çeşitliliği değil yedekliliği kesiyor.** Yan
-fayda: `noise` payı %6.8'den %17.8'e çıkıyor, dengesizlik büyük ölçüde
-çözülüyor.
+**Alt örneklem: k=0 — tüm satırlar kullanılıyor.** Önbellek "ham malzeme"
+olarak kuruluyor, hiçbir satır atılmıyor (boş pencereler hariç). Alt
+örneklem böylece kurulum kararı değil **eğitim anı parametresi** oldu:
+`onbellek_alt_kume(onbellek, kanal_basina=k)` aynı önbellekten her k'yi
+sıfır maliyetle üretiyor, yeniden kurulum gerekmiyor.
 
 Ayrıntı ve tüm sayılar: `GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 8.5
 
@@ -166,7 +166,7 @@ Ayrıntı ve tüm sayılar: `GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 8.5
 
 Ön-hesaplama kararı ölçüme dayanıyor: darboğaz I/O olduğu için her epoch'ta
 HDF5 okumak her epoch'a 4–19 dk ekler. Bir kez hesaplanıp **uint8** olarak
-diske yazılıyor (k=2 için 1.2 GB, RAM'e sığar).
+diske yazılıyor — tüm satırlarla **6.2 GB**, tek seferlik ~18.5 dk.
 
 **torch gerektirmiyor** — numpy + h5py. Kurulum sorusu beklenmeden
 ilerleyebilir, üretilen önbelleği PyTorch da Keras da okur.
