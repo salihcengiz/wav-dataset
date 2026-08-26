@@ -142,6 +142,31 @@ macro-F1 0.771
    Satırlar fazlasıyla yedekli (21.318 dosya × ~14 bitişik kanal, hepsi aynı
    olayı görüyor) — alt örneklemle başlamak mantıklı.
 
+### ⏳ Ölçüm bekliyor: `src/sunucu_kontrol.py`
+
+İkisini de ölçerek cevaplayan script yazıldı ve yerelde sahte veriyle
+uçtan uca test edildi. **Sunucuda çalıştırılması bekleniyor.**
+
+JupyterLab'e `real_data.py` ve `sunucu_kontrol.py` yüklenir, sonra:
+
+```python
+import sunucu_kontrol
+sunucu_kontrol.tam_rapor()          # varsayilan kok: FENCE_DATA_NEW
+```
+
+Dört bölüm üretir: **A)** torch/GPU/disk/RAM · **B)** CSV yedekliliği ve alt
+örneklem projeksiyonu · **C)** satır başına ms + epoch süresi tahmini
+(dağınık vs gruplu okuma, aşama kırılımı) · **D)** ön-hesaplanmış
+spektrogram önbelleğinin disk boyutu.
+
+Hiçbir şey yazmaz/silmez. Çıktısı geldiğinde alt örneklem oranı ve önbellek
+stratejisi **ölçüme dayanarak** seçilecek.
+
+`alt_orneklem(df, kanal_basina=k)` fonksiyonu ölçümden sonra da kalacak —
+eğitim hattı da onu kullanacak. Kanalları rastgele değil **eşit aralıklı**
+seçiyor (olay merkezdeki kanalda güçlü, kenarlarda zayıf; rastgele seçim iki
+komşu kanalı alıp neredeyse birebir kopya iki örnek üretebilir).
+
 Sonra:
 - PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
 - `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan

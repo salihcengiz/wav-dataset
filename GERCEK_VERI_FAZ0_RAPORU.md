@@ -453,11 +453,16 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
       ölçümümüzü yaptık
 
 ### Sırada — gerçek eğitim hattı
-- [ ] Ortam kontrolü: sunucuda PyTorch var mı, GPU var mı
+- [~] Ortam kontrolü: sunucuda PyTorch var mı, GPU var mı
       (veri sunucudan çıkamaz, eğitim orada olmalı)
-- [ ] Yükleme hızı ölçümü: 293.469 satır × HDF5 açma maliyeti
-- [ ] Alt örneklem stratejisi: satırlar fazlasıyla yedekli (21.318 dosya,
+- [~] Yükleme hızı ölçümü: 293.469 satır × HDF5 açma maliyeti
+- [~] Alt örneklem stratejisi: satırlar fazlasıyla yedekli (21.318 dosya,
       dosya başına ~14 bitişik kanal, hepsi aynı olayı görüyor)
+
+> Üçü de **`src/sunucu_kontrol.py`** ile ölçülecek. Script yazıldı ve
+> yerelde sahte veriyle test edildi; sunucuda çalıştırılması bekleniyor.
+> Çalıştırma talimatı: `DURUM.md` Bölüm 5.
+
 - [ ] PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
 - [ ] `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan
 
