@@ -166,7 +166,8 @@ def bir_epoch(model, yukl, kayip_fn, optim, cihaz, maks_batch=None,
 
 
 def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
-        isci=6, sinif_agirligi=False, hizli=False, onceden=None):
+        isci=6, sinif_agirligi=False, hizli=False, onceden=None,
+        bellege_al=False):
     """
     Bir konfigurasyonu bastan sona egitir ve test setinde OLCER.
 
@@ -196,13 +197,16 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
     for ad, dosya in (("train", "onbellek_train_final_k0.h5"),
                       ("val", "onbellek_val_final_k0.h5"),
                       ("test", "onbellek_test_final_k0.h5")):
-        # train RAM'e aliniyor cunku KARISTIRILARAK okunuyor: onbellek
-        # chunks=(64,...) + LZF ile yazildi, rastgele erisimde her ornek
-        # icin 64 orneklik blok aciliyor (olculdu: 900 ornek/s).
-        # val/test sirali okunuyor, batch=64 tam bir bloga denk geliyor --
-        # onlarda diskten okumak sorun degil.
+        # bellege_al VARSAYILAN OLARAK KAPALI -- olcum sonucu (2026-08-26):
+        #     diskten:  yalniz veri 1.624 ornek/s, tam adim 939 ornek/s
+        # Bu ikisinden GPU adiminin tek basina ~2.200 ornek/s kapasiteli
+        # oldugu cikiyor. Yani veri okuma sonsuz hizlansa bile tavan 2.200:
+        # epoch 3.9 dk yerine ancak 1.7 dk olurdu.
+        # RAM'e almak 6.58 GB ister ve bir kez OOM ile oldurdu. Kazanc
+        # riski hak etmiyor; --bellege-al ile acilabilir.
         k = OnbellekKumesi(veri / dosya, egitim=(ad == "train"),
-                           renk=ayar["renk"], bellege_al=(ad == "train"))
+                           renk=ayar["renk"],
+                           bellege_al=(bellege_al and ad == "train"))
         kumeler[ad] = k
         yukleyiciler[ad] = yukleyici(k, batch=batch, isci=isci)
     siniflar = kumeler["train"].siniflar
@@ -418,6 +422,8 @@ if __name__ == "__main__":
     ap.add_argument("--isci", type=int, default=6)
     ap.add_argument("--sinif-agirligi", action="store_true",
                     help="dengesiz siniflar icin agirlikli kayip")
+    ap.add_argument("--bellege-al", action="store_true",
+                    help="train onbellegini RAM'e al (6.58 GB, OOM riski)")
     ap.add_argument("--hizli", action="store_true",
                     help="kisa duman testi, sonuc raporlanmaz")
     ap.add_argument("--onceden", default=None, help="aktarim paketi yolu")
@@ -427,4 +433,4 @@ if __name__ == "__main__":
     else:
         kos(a.kosu, veri=a.veri, cikti=a.cikti, epoch=a.epoch, batch=a.batch,
             isci=a.isci, sinif_agirligi=a.sinif_agirligi, hizli=a.hizli,
-            onceden=a.onceden)
+            onceden=a.onceden, bellege_al=a.bellege_al)

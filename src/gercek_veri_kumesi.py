@@ -127,6 +127,24 @@ def viridis_lut():
     return np.frombuffer(ham, dtype=np.uint8).reshape(256, 3)
 
 
+def _kullanilabilir_ram():
+    """
+    MemAvailable (bayt) -- cekirdegin "hemen kullanilabilir" tahmini.
+
+    MemFree DEGIL: MemFree sayfa onbellegini haric tutar ve gercekte
+    kullanilabilecek bellegi ciddi sekilde eksik gosterir. Linux disinda
+    None doner.
+    """
+    try:
+        with open("/proc/meminfo") as f:
+            for satir in f:
+                if satir.startswith("MemAvailable:"):
+                    return int(satir.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
 # ---------------------------------------------------------------
 # VERI KUMESI
 # ---------------------------------------------------------------
@@ -211,9 +229,26 @@ class OnbellekKumesi(Dataset):
         """
         n = len(self.indeksler)
         bayt = n * int(np.prod(self.sekil))
+
+        # OOM KORUMASI. Bir kez oldurulduk: 6.58 GB'lik dizi + hala ayakta
+        # olan 6 isci sureci + CUDA baglami, 16.5 GB'lik makinede tasti.
+        # np.empty basarisiz olmaz -- cekirdek surecı OOM killer ile OLDURUR,
+        # yani try/except ise yaramaz. Onceden bakmak tek yol.
+        bos = _kullanilabilir_ram()
+        if bos is not None and bayt > 0.6 * bos:
+            raise MemoryError(
+                f"Onbellegi RAM'e almak {bayt/1e9:.2f} GB ister, "
+                f"kullanilabilir RAM {bos/1e9:.2f} GB.\n"
+                f"  Guvenli sinir kullanilabilirin %60'i (isci surecleri, "
+                f"CUDA baglami ve tamponlar icin pay birakiliyor).\n"
+                f"  bellege_al=False ile diskten okuyun -- olculdu, "
+                f"epoch farki 3.9 dk'ya karsi 1.7 dk, yani hayati degil.")
+
         if not sessiz:
             print(f"    onbellek RAM'e aliniyor: {n:,} pencere, "
-                  f"{bayt / 1e9:.2f} GB ...", end="", flush=True)
+                  f"{bayt / 1e9:.2f} GB "
+                  + (f"(kullanilabilir {bos/1e9:.1f} GB) " if bos else "")
+                  + "...", end="", flush=True)
         t0 = time.perf_counter()
         self._ram = np.empty((n,) + self.sekil, dtype=np.uint8)
         with h5py.File(self.yol, "r", rdcc_nbytes=self.rdcc) as f:

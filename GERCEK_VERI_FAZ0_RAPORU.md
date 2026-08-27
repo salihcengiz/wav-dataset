@@ -716,6 +716,55 @@ Bölüm 6.1'deki ilk ölçüm (climbing %20, cutting %28, noise %0) doğrulandı
 
 ---
 
+## 8.7 EĞİTİM HIZI ÖLÇÜMÜ (2026-08-26)
+
+`gercek_egitim.py --olcum`, RTX 3090 (paylaşımlı), batch 64, 6 işçi:
+
+| Aşama | örnek/s | epoch tahmini |
+|---|---|---|
+| yalnız veri (DataLoader) | 1.624 | 2.3 dk |
+| + GPU'ya + `hazirla()` | 1.632 | 2.3 dk |
+| + tam adım (ileri/geri/optim) | **939** | **3.9 dk** |
+
+### İki çıkarım
+
+**1. GPU'daki dönüşüm bedava.** 1.624 → 1.632, fark yok. `hazirla()`'yı
+GPU'ya taşıma kararı doğruydu — CPU'da yapılsaydı ölçülebilir bir maliyet
+olurdu (batch başına 55 MB yerine 1.8 MB PCIe trafiği).
+
+**2. Tek darboğaz veri okuma değil.** `1/939 − 1/1632` hesabından GPU
+adımının tek başına ~**2.200 örnek/s** kapasiteli olduğu çıkıyor. Yani veri
+okuma sonsuz hızlansa bile tavan 2.200 — epoch ancak 3.9 dk'dan 1.7 dk'ya
+inerdi.
+
+GPU adımının 34.835 parametrelik bir model için bu kadar yavaş olmasının
+iki sebebi var: GPU **paylaşımlı** (ölçüm anında başka bir konteyner %85
+kullanıyordu) ve `use_deterministic_algorithms(True)` hızlı cuDNN
+algoritmalarını devre dışı bırakıyor. Determinizm bilinçli bir tercih
+(DURUM.md Bölüm 6) ve bedeli kabul edilebilir.
+
+### Reddedilen iyileştirme: önbelleği RAM'e almak
+
+Önbellek `chunks=(64, 129, 231)` + LZF ile yazıldı. `shuffle=True` iken
+rastgele erişimde HDF5 tek örnek için 64 örneklik bloğu açıyor; üstelik
+h5py'nin varsayılan blok önbelleği 1 MB, blok 1.9 MB — hiç tutmuyor.
+
+Çözüm olarak tüm train önbelleğini (6.58 GB) RAM'e almayı denedik,
+**OOM ile öldürüldü** (16.5 GB makine, 6 işçi süreci ve CUDA bağlamı
+ayaktayken). Yukarıdaki hesap zaten kazancın 3.9 → 1.7 dk ile sınırlı
+olduğunu gösterdiği için **vazgeçildi**.
+
+`bellege_al` seçeneği kodda duruyor ama varsayılan **kapalı** ve artık
+`MemAvailable`'a bakıp yetmiyorsa OOM yerine açık bir `MemoryError`
+fırlatıyor.
+
+> Not: LZF neredeyse hiç sıkıştırmamış (6.58 GB ham → 6.59 GB dosya).
+> Önbellek yeniden kurulursa `compression=None, chunks=(1, ...)` daha
+> doğru olur — ama mevcut önbelleği yeniden kurmayı hak edecek bir kazanç
+> değil.
+
+---
+
 ## 9. SENTETİK VERİYLE KARŞILAŞTIRMA
 
 | | Sentetik | Gerçek |
