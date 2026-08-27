@@ -190,38 +190,170 @@ def _yorum(fark, ad):
             f"({abs(fark):.4f}).")
 
 
-def egriler(kosular, cikti):
-    """Ogrenme egrileri. matplotlib yoksa sessizce atlanir."""
+def _plt():
+    """matplotlib varsa dondurur, yoksa None. Sunucuda kurulu olmayabilir."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        return plt
     except ImportError:
         print("\n  (matplotlib yok -- sekiller atlandi)")
         return None
 
-    fig, eks = plt.subplots(1, 3, figsize=(16, 4.2))
+
+RENKLER = {1: "tab:blue", 2: "tab:orange", 3: "tab:green"}
+
+
+def egriler(kosular, cikti):
+    """
+    Ogrenme egrileri: kayip, dogruluk, macro-F1, ogrenme orani.
+
+    Duz cizgi = egitim, kesikli = dogrulama. Egitim metrikleri MASKELENMIS
+    girdiler uzerinde olculuyor (artirma yalnizca egitimde acik), bu yuzden
+    dogrulamanin egitimin USTUNDE olmasi normaldir ve asiri ogrenme
+    olmadiginin isaretidir.
+    """
+    plt = _plt()
+    if plt is None:
+        return None
+
+    fig, eks = plt.subplots(2, 2, figsize=(13, 8))
+    (a_kayip, a_dog), (a_f1, a_lr) = eks
+
     for no in sorted(kosular):
         d = kosular[no]
+        c = RENKLER.get(no, None)
         ep = np.arange(1, len(d["train_kayip"]) + 1)
-        etiket = f"{no}: {d['ayar']['ad']}"
-        eks[0].plot(ep, d["train_kayip"], label=etiket)
-        eks[1].plot(ep, d["val_kayip"], label=etiket)
-        eks[2].plot(ep, d["val_macro_f1"], label=etiket)
-        eks[2].scatter([d["en_iyi_epoch"]], [d["en_iyi_val_macro_f1"]],
-                       marker="o", zorder=5)
-    for e, b in zip(eks, ("Egitim kaybi", "Dogrulama kaybi",
-                          "Dogrulama macro-F1")):
-        e.set_xlabel("epoch"); e.set_title(b); e.grid(alpha=.3); e.legend()
-    eks[2].axhline(TABAN, ls="--", c="gray", lw=1)
-    eks[2].annotate(f"taban {TABAN}", (0.02, TABAN + 0.005),
-                    xycoords=("axes fraction", "data"), fontsize=8, color="gray")
-    fig.suptitle("Gercek veri -- uc kosu")
+        et = f"{no}: {d['ayar']['ad']}"
+
+        a_kayip.plot(ep, d["train_kayip"], c=c, label=f"{et} (egitim)")
+        a_kayip.plot(ep, d["val_kayip"], c=c, ls="--", label=f"{et} (dogrulama)")
+        a_dog.plot(ep, d["train_dogruluk"], c=c, label=f"{et} (egitim)")
+        a_dog.plot(ep, d["val_dogruluk"], c=c, ls="--", label=f"{et} (dogrulama)")
+        a_f1.plot(ep, d["val_macro_f1"], c=c, label=et)
+        a_f1.scatter([d["en_iyi_epoch"]], [d["en_iyi_val_macro_f1"]],
+                     c=c, marker="o", s=60, zorder=5, edgecolors="k",
+                     linewidths=.6)
+        a_f1.annotate(f"en iyi: {d['en_iyi_val_macro_f1']:.4f}\n"
+                      f"(epoch {d['en_iyi_epoch']})",
+                      (d["en_iyi_epoch"], d["en_iyi_val_macro_f1"]),
+                      textcoords="offset points", xytext=(8, -18),
+                      fontsize=8, color=c)
+        a_lr.plot(ep, d["lr"], c=c, label=et, drawstyle="steps-post")
+
+    a_kayip.set_title("Kayip"); a_kayip.set_ylabel("kayip")
+    a_dog.set_title("Dogruluk"); a_dog.set_ylabel("dogruluk")
+    a_f1.set_title("Dogrulama macro-F1  (model secimi buna gore)")
+    a_f1.set_ylabel("macro-F1")
+    a_lr.set_title("Ogrenme orani"); a_lr.set_ylabel("lr"); a_lr.set_yscale("log")
+
+    # Taban cizgisi -- asilmasi gereken esik
+    a_f1.axhline(TABAN, ls=":", c="crimson", lw=1.5)
+    a_f1.annotate(f"taban cizgisi {TABAN} (dogrusal, 26 ozellik)",
+                  (0.02, TABAN), xycoords=("axes fraction", "data"),
+                  xytext=(0, 5), textcoords="offset points",
+                  fontsize=8, color="crimson")
+
+    for e in (a_kayip, a_dog, a_f1, a_lr):
+        e.set_xlabel("epoch"); e.grid(alpha=.3)
+        e.legend(fontsize=8)
+
+    fig.suptitle("Gercek saha verisi -- ogrenme egrileri\n"
+                 "(duz = egitim, kesikli = dogrulama; egitim metrikleri "
+                 "maskelenmis girdiler uzerinde)", fontsize=11)
     fig.tight_layout()
-    yol = Path(cikti) / "kosu_egrileri.png"
-    fig.savefig(yol, dpi=120, bbox_inches="tight")
+    yol = Path(cikti) / "ogrenme_egrileri.png"
+    fig.savefig(yol, dpi=130, bbox_inches="tight")
     plt.close(fig)
     print(f"\n  sekil: {yol}")
+    return yol
+
+
+def karisiklik_sekli(kosular, cikti):
+    """
+    Karisiklik matrisi isi haritasi -- her kosu icin bir panel.
+
+    Renk SATIR BAZINDA normalize (yani recall). Ham sayilarla renklendirmek
+    yaniltirdi: noise sinifinda 3.554 ornek var, climbing'de 21.910; ham
+    sayida noise satiri hep soluk gorunur ve "kotu tanindigi" izlenimi verir.
+    Hucrelerde hem yuzde hem ham sayi yaziyor.
+    """
+    plt = _plt()
+    if plt is None:
+        return None
+
+    n = len(kosular)
+    fig, eks = plt.subplots(1, n, figsize=(5.4 * n, 4.8), squeeze=False)
+    for sut, no in enumerate(sorted(kosular)):
+        d = kosular[no]
+        siniflar = d["siniflar"]
+        M = np.asarray(d["karisiklik"], dtype=np.float64)
+        oran = M / np.maximum(M.sum(1, keepdims=True), 1)
+
+        e = eks[0][sut]
+        im = e.imshow(oran, cmap="Blues", vmin=0, vmax=1)
+        for i in range(len(siniflar)):
+            for j in range(len(siniflar)):
+                e.text(j, i, f"{oran[i, j]:.1%}\n{int(M[i, j]):,}",
+                       ha="center", va="center", fontsize=9,
+                       color="white" if oran[i, j] > 0.5 else "black")
+        e.set_xticks(range(len(siniflar)), siniflar, rotation=20)
+        e.set_yticks(range(len(siniflar)), siniflar)
+        e.set_xlabel("tahmin"); e.set_ylabel("gercek")
+        e.set_title(f"Kosu {no} -- {d['ayar']['ad']}\n"
+                    f"test macro-F1 {d['test_macro_f1']:.4f}  "
+                    f"(taban {TABAN}, {d['test_macro_f1']-TABAN:+.3f})",
+                    fontsize=10)
+        fig.colorbar(im, ax=e, fraction=0.046, label="satir orani (recall)")
+
+    fig.suptitle("Karisiklik matrisi -- TEST seti "
+                 "(satir = gercek, sutun = tahmin)", fontsize=12)
+    fig.tight_layout()
+    yol = Path(cikti) / "karisiklik_matrisi.png"
+    fig.savefig(yol, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  sekil: {yol}")
+    return yol
+
+
+def sinif_sekli(kosular, cikti):
+    """
+    Sinif bazinda F1 -- taban cizgisiyle yan yana cubuk grafik.
+
+    Ana hikaye bu grafikte: kazanc climbing ve cutting'de, noise'da degil.
+    """
+    plt = _plt()
+    if plt is None:
+        return None
+
+    fig, e = plt.subplots(figsize=(1.8 + 2.6 * len(kosular), 4.4))
+    siniflar = kosular[sorted(kosular)[0]]["siniflar"]
+    x = np.arange(len(siniflar))
+    grup = len(kosular) + 1
+    gen = 0.8 / grup
+
+    taban = [TABAN_SINIF.get(s, np.nan) for s in siniflar]
+    e.bar(x - 0.4 + gen / 2, taban, gen, label="taban (dogrusal)",
+          color="lightgray", edgecolor="gray")
+    for k, no in enumerate(sorted(kosular)):
+        d = kosular[no]
+        _, _, f1, _ = sinif_metrikleri(d["karisiklik"])
+        e.bar(x - 0.4 + gen * (k + 1.5), f1, gen,
+              label=f"kosu {no}: {d['ayar']['ad']}", color=RENKLER.get(no))
+        for i, v in enumerate(f1):
+            e.text(x[i] - 0.4 + gen * (k + 1.5), v + 0.012, f"{v:.3f}",
+                   ha="center", fontsize=8)
+
+    e.set_xticks(x, siniflar)
+    e.set_ylabel("F1"); e.set_ylim(0, 1.08)
+    e.set_title("Sinif bazinda F1 -- taban cizgisiyle karsilastirma (test)")
+    e.grid(axis="y", alpha=.3); e.legend(fontsize=9)
+    fig.tight_layout()
+    yol = Path(cikti) / "sinif_bazinda_f1.png"
+    fig.savefig(yol, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  sekil: {yol}")
     return yol
 
 
@@ -285,6 +417,8 @@ def rapor(cikti):
         kosu_detay(no, kosular[no])
     karsilastirmalar(kosular)
     egriler(kosular, cikti)
+    karisiklik_sekli(kosular, cikti)
+    sinif_sekli(kosular, cikti)
     markdown(kosular, cikti)
     print(f"\n{CIFT}\nRAPOR TAMAM.")
     return 0
