@@ -113,8 +113,13 @@ def kosu_detay(no, d, yaz=print):
     yaz(CIFT)
     yaz(f"  {KOSU_ACIKLAMA.get(no, '')}")
     yaz(f"  train {d['n_train']:,} | val {d['n_val']:,} | test {d['n_test']:,}")
+    # "lr" epoch basina liste; baslangic degeri ayri anahtarda. Eski
+    # dosyalarda ise "lr" skaler (bkz. gercek_egitim.py'deki ezme hatasi).
+    lr0 = d.get("lr_baslangic")
+    if lr0 is None:
+        lr0 = d["lr"][0] if isinstance(d.get("lr"), list) else d.get("lr")
     yaz(f"  parametre {d['parametre']:,} | tohum {d['tohum']} | "
-        f"batch {d['batch']} | lr {d['lr']}")
+        f"batch {d['batch']} | lr {lr0}")
     yaz(f"  en iyi epoch {d['en_iyi_epoch']} / {len(d['train_kayip'])} kosulan")
 
     siniflar = d["siniflar"]
@@ -220,6 +225,7 @@ def egriler(kosular, cikti):
 
     fig, eks = plt.subplots(2, 2, figsize=(13, 8))
     (a_kayip, a_dog), (a_f1, a_lr) = eks
+    lr_var = [False]          # en az bir kosuda kullanilabilir lr gecmisi var mi
 
     for no in sorted(kosular):
         d = kosular[no]
@@ -232,6 +238,13 @@ def egriler(kosular, cikti):
         a_dog.plot(ep, d["train_dogruluk"], c=c, label=f"{et} (egitim)")
         a_dog.plot(ep, d["val_dogruluk"], c=c, ls="--", label=f"{et} (dogrulama)")
         a_f1.plot(ep, d["val_macro_f1"], c=c, label=et)
+        # lr gecmisi bozuk/eksik olabilir: kosu 3'te "lr" anahtari skalerle
+        # ezilmisti (gercek_egitim.py'de duzeltildi). Eski dosyalar da
+        # okunabilsin diye uzunluk kontrolu yapiliyor.
+        lr_gecmis = d.get("lr")
+        if isinstance(lr_gecmis, (list, tuple)) and len(lr_gecmis) == len(ep):
+            a_lr.plot(ep, lr_gecmis, c=c, label=et, drawstyle="steps-post")
+            lr_var[0] = True
         a_f1.scatter([d["en_iyi_epoch"]], [d["en_iyi_val_macro_f1"]],
                      c=c, marker="o", s=60, zorder=5, edgecolors="k",
                      linewidths=.6)
@@ -240,13 +253,20 @@ def egriler(kosular, cikti):
                       (d["en_iyi_epoch"], d["en_iyi_val_macro_f1"]),
                       textcoords="offset points", xytext=(8, -18),
                       fontsize=8, color=c)
-        a_lr.plot(ep, d["lr"], c=c, label=et, drawstyle="steps-post")
 
     a_kayip.set_title("Kayip"); a_kayip.set_ylabel("kayip")
     a_dog.set_title("Dogruluk"); a_dog.set_ylabel("dogruluk")
     a_f1.set_title("Dogrulama macro-F1  (model secimi buna gore)")
     a_f1.set_ylabel("macro-F1")
-    a_lr.set_title("Ogrenme orani"); a_lr.set_ylabel("lr"); a_lr.set_yscale("log")
+    a_lr.set_title("Ogrenme orani"); a_lr.set_ylabel("lr")
+    if lr_var[0]:
+        a_lr.set_yscale("log")
+    else:
+        a_lr.text(0.5, 0.5,
+                  "lr gecmisi kayitli degil\n(eski kosu dosyasi)",
+                  ha="center", va="center", transform=a_lr.transAxes,
+                  fontsize=10, color="gray")
+        a_lr.set_xticks([]); a_lr.set_yticks([])
 
     # Taban cizgisi -- asilmasi gereken esik
     a_f1.axhline(TABAN, ls=":", c="crimson", lw=1.5)
@@ -255,9 +275,10 @@ def egriler(kosular, cikti):
                   xytext=(0, 5), textcoords="offset points",
                   fontsize=8, color="crimson")
 
-    for e in (a_kayip, a_dog, a_f1, a_lr):
-        e.set_xlabel("epoch"); e.grid(alpha=.3)
-        e.legend(fontsize=8)
+    for e in (a_kayip, a_dog, a_f1):
+        e.set_xlabel("epoch"); e.grid(alpha=.3); e.legend(fontsize=8)
+    if lr_var[0]:
+        a_lr.set_xlabel("epoch"); a_lr.grid(alpha=.3); a_lr.legend(fontsize=8)
 
     fig.suptitle("Gercek saha verisi -- ogrenme egrileri\n"
                  "(duz = egitim, kesikli = dogrulama; egitim metrikleri "

@@ -357,7 +357,10 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
             "n_test": len(kumeler["test"]),
             "parametre": count_parameters(model),
             "toplam_dakika": round(toplam_sure / 60, 1),
-            "tohum": TOHUM, "batch": batch, "lr": LR,
+            # DIKKAT: "lr" anahtari her epoch'un ogrenme oranini tutan LISTE.
+            # Buraya skaler "lr": LR yazmak o listeyi EZIYORDU -- kosu 3'te
+            # lr gecmisi bu yuzden kayboldu. Baslangic degeri ayri isimde.
+            "tohum": TOHUM, "batch": batch, "lr_baslangic": LR,
             "label_smoothing": LABEL_SMOOTHING,
             "sinif_agirligi": bool(sinif_agirligi),
         })
