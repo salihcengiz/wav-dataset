@@ -279,8 +279,26 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
             en_iyi_skor, en_iyi_epoch, kotu = val["macro_f1"], ep, 0
             en_iyi_durum = {k: v.detach().cpu().clone()
                             for k, v in model.state_dict().items()}
+            # HER IYILESMEDE DISKE YAZ. Onceden en iyi model yalnizca
+            # bellekte tutuluyor ve egitim bitince yaziliyordu -- 2.7 saatlik
+            # bir kosuda cokme, OOM veya kesinti her seyi silerdi.
+            # Egitim matematigini etkilemez, sadece isi korur.
+            if not hizli:
+                torch.save({"state_dict": en_iyi_durum, "kosu": kosu,
+                            "ayar": ayar, "en_iyi_epoch": ep,
+                            "val_macro_f1": en_iyi_skor, "siniflar": siniflar,
+                            "tamamlandi": False},
+                           cikti / f"kosu{kosu}_{ayar['ad']}_arayuz.pt")
         else:
             kotu += 1
+
+        # Gecmisi de her epoch'ta yaz -- kosu yarida kalsa bile egriler durur
+        if not hizli:
+            (cikti / f"kosu{kosu}_{ayar['ad']}_ilerleme.json").write_text(
+                json.dumps({**gecmis, "kosu": kosu, "ayar": ayar,
+                            "siniflar": siniflar, "en_iyi_epoch": en_iyi_epoch,
+                            "en_iyi_val_macro_f1": en_iyi_skor,
+                            "tamamlandi": False}, indent=2), encoding="utf-8")
 
         print(f"    egitim  kayip {tr_kayip:.4f}  dogruluk {tr_dog:.3f}")
         print(f"    dogrul. kayip {val['kayip']:.4f}  dogruluk "
