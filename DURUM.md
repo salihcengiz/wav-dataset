@@ -250,6 +250,11 @@ gürültü — std 1.814, yani `[-π,π]` düzgün dağılımın std'si (`π/√
 ham değerlerin ±11 aralığında olması (22 benzersiz değer), faz kuantalanması
 ~19°. **Ekip de faz kullanmıyor, genlik kullanıyor.**
 
+⚠️ Ama bu bir **fizik sınırı değil, veri hazırlama sınırı.** Faz, DAS'ta
+genlikten teorik olarak üstün büyüklüktür (doğrusal, nicel, fading yok).
+İleride kullanılabilir — ne gerektiği ve nasıl kullanılacağı:
+**`FAZ_BILGISI.md`**
+
 ### Erken durdurmayı `val_loss` ile yapmak
 
 Sentetik aşamada model seçimi `val_loss` izliyordu. Doğruluk yükselirken
