@@ -63,6 +63,7 @@ Sunucu ortamı ve yükleme hızı **ölçüldü** (Bölüm 5). Sırada spektrogr
 | 2 | `src/real_data.py` | Ön işleme hattı. Docstring'ler gerekçeleri açıklıyor |
 | 3 | `outputs/pretrained/MODEL_CARD.md` | Önceden eğitilmiş model: nasıl yüklenir, sınırları |
 | 4 | `PLAN_2DCNN_SKAttention.md` | Orijinal plan. Metodoloji (Bölüm 2, 5) ve uygulama kararları (Bölüm 6.4) |
+| 1b | **`GERCEK_VERI_EGITIM_SONUCLARI.md`** | **Üç koşunun sonuçları**, çekinceler, iyileştirme sırası |
 | 5 | `SENTETIK_VERI_SONUCLARI.md` | Aşama 1'in tam kaydı: adli bulgular, katman kompozisyonu, hata analizi, neden 0.62'de tıkandı |
 | 6 | `MODEL_IYILESTIRME_PLANI.md` | Sentetik aşamadaki iyileştirme paketleri ve ölçülen sonuçları |
 
@@ -207,16 +208,29 @@ birebir aynı olduğu dahil). Yerelde CPU torch ile test edildi.
 - [x] Eğitim döngüsü yazıldı, üç koşu da yerelde sınandı
 - [ ] **Sunucuda koş** — önce `--hizli` duman testi, sonra üç koşu
 
-Üç koşu (önceden tasarlandı, test setine bakmadan):
+### ✅ ÜÇ KOŞU TAMAMLANDI (2026-08-27)
 
-| # | girdi | başlangıç | neyi ölçer |
+| # | girdi | başlangıç | **test macro-F1** |
 |---|---|---|---|
-| 1 | viridis | sıfırdan | referans |
-| 2 | viridis | aktarım | 1'e karşı: sentetik ön-eğitim işe yarıyor mu |
-| 3 | gri | sıfırdan | 1'e karşı: viridis zarar veriyor mu |
+| **1** | viridis | sıfırdan | **0.8843** ← en iyi |
+| 3 | gri | sıfırdan | 0.8737 |
+| 2 | viridis | aktarım | 0.8658 |
+| — | *taban çizgisi* | *doğrusal* | *0.771* |
 
-Her koşuda **tek değişken** değişiyor. İkisini birden değiştirmek hangi
-etkinin fark yarattığını belirsizleştirirdi.
+**Taban çizgisi +0.113 farkla aşıldı.**
+
+İki soru da cevaplandı:
+- **Sentetik ön-eğitim işe yaramadı** (−0.019, aktarım daha kötü). Aşama
+  1'in ağırlıkları artık kullanılmıyor; mimari ve metodoloji kullanılıyor.
+- **Viridis zarar vermedi** (+0.011 lehine, tahminin tersi).
+
+⚠️ **Ana bulgu: model yetersiz öğreniyor.** Üç koşuda da doğrulama
+doğruluğu eğitimin üstünde; koşu 1 epoch tavanına çarptığında hâlâ
+iyileşiyordu. Darboğaz mimari değil, eğitim rejimi (maskeleme fazla,
+kapasite küçük).
+
+Tam kayıt, çekinceler ve iyileştirme sırası:
+**`GERCEK_VERI_EGITIM_SONUCLARI.md`**
 
 ⚠️ **Aktarım varsayımı artık geçerli değil.** Önceden eğitilmiş paket "çok
 az saha verisi varken sıfırdan başlamamak" için üretilmişti (MODEL_CARD).
