@@ -34,6 +34,11 @@ A3. set_deterministic() -- ayni tohum ayni sonuc.
     2  viridis   aktarim     1'e karsi: sentetik on-egitim ise yariyor mu
     3  gri       sifirdan    1'e karsi: viridis zarar veriyor mu
 
+Sonradan eklendi:
+    4  viridis   sifirdan    CNN-BiLSTM, yeni rejim (maskeleme kapali,
+                             tavan 80). Modeli CNN-BiLSTM/egitim_bilstm.py
+                             `model_fn` ile veriyor.
+
 Her koşuda tek degisken degisiyor. Ikisini birden degistirmek (orn.
 aktarim+viridis vs sifirdan+gri) hangi etkinin fark yarattigini
 belirsizlestirirdi -- bu projenin daha once dustugu hata turu.
@@ -91,6 +96,10 @@ KOSULAR = {
     1: {"ad": "viridis_sifirdan", "renk": "viridis", "aktarim": False},
     2: {"ad": "viridis_aktarim", "renk": "viridis", "aktarim": True},
     3: {"ad": "gri_sifirdan", "renk": "gri", "aktarim": False},
+    # 4: CNN-BiLSTM. Modeli CNN-BiLSTM/egitim_bilstm.py `model_fn` ile
+    # veriyor; buradaki girdi yalnizca renk/aktarim ayarini ve cikti adini
+    # belirliyor.
+    4: {"ad": "bilstm_yeni_rejim", "renk": "viridis", "aktarim": False},
 }
 
 
@@ -142,13 +151,15 @@ def degerlendir(model, yukl, kayip_fn, cihaz, n_sinif=3, maks_batch=None):
 
 
 def bir_epoch(model, yukl, kayip_fn, optim, cihaz, maks_batch=None,
-              her=200, t0=None):
+              her=200, t0=None, maske_p=0.5):
+    """maske_p=0.0 -> maskeleme kapali (bkz. kos() docstring'i)."""
     model.train()
     toplam, n, dogru = 0.0, 0, 0
     for i, (x, y) in enumerate(yukl):
         if maks_batch and i >= maks_batch:
             break
-        x = hazirla(x.to(cihaz, non_blocking=True), egitim=True)
+        x = hazirla(x.to(cihaz, non_blocking=True), egitim=True,
+                    maske_p=maske_p)
         y = y.to(cihaz, non_blocking=True)
         optim.zero_grad(set_to_none=True)
         cikti = model(x)
@@ -167,15 +178,36 @@ def bir_epoch(model, yukl, kayip_fn, optim, cihaz, maks_batch=None,
 
 def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
         isci=6, sinif_agirligi=False, hizli=False, onceden=None,
-        bellege_al=False):
+        bellege_al=False, model_fn=None, maske_p=0.5, sabir=SABIR):
     """
     Bir konfigurasyonu bastan sona egitir ve test setinde OLCER.
 
     hizli=True: 200 egitim + 50 dogrulama batch'i. Hattin calistigini
     dogrulamak icin; sonuc raporlanmaz.
+
+    model_fn : cagrilabilir | None
+        None -> DASNet(attention="sk", n_classes=...)  (varsayilan, kosu 1-3)
+        Verilirse `model_fn(n_classes=...)` cagrilir. CNN-BiLSTM gibi farkli
+        mimariler bu dongunun icine gomulu dersleri (A1 val macro-F1 izleme,
+        A2 en erken epoch, A3 determinizm, epoch basina checkpoint, teste
+        BIR KEZ bakma) yeniden yazmadan kullanabilsin diye var.
+
+    maske_p : float
+        Zaman/frekans maskeleme olasiligi. 0.0 -> kapali.
+        Olculdu (GERCEK_VERI_EGITIM_SONUCLARI.md Bolum 5): uc kosuda da
+        dogrulama dogrulugu egitimin USTUNDE cikti, cunku egitim metrikleri
+        maskelenmis girdiler uzerinde olculuyor. Maskeleme sentetik asamada
+        zorunluydu (19 kayit, ezberleme riski); 21.101 bagimsiz dosyayla
+        muhtemelen gereksiz.
+
+    sabir : int
+        Erken durdurma sabri. Uzun butcelerde 6 dar kalabiliyor: LR dususu
+        3 kotu epoch'ta tetikleniyor, geriye dususun etkisini gosterecek
+        3 epoch kaliyor.
     """
     if kosu not in KOSULAR:
-        raise ValueError(f"kosu 1, 2 veya 3 olmali ({kosu} verildi)")
+        raise ValueError(f"gecersiz kosu {kosu} "
+                         f"(secenekler: {sorted(KOSULAR)})")
     ayar = KOSULAR[kosu]
     veri, cikti = Path(veri), Path(cikti)
     cikti.mkdir(parents=True, exist_ok=True)
@@ -190,7 +222,8 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
     print(f"  cihaz         : {cihaz}"
           + (f"  ({torch.cuda.get_device_name(0)})" if cihaz.type == "cuda" else ""))
     print(f"  tohum {TOHUM} | batch {batch} | lr {LR} | maks epoch {epoch} "
-          f"| sabir {SABIR}")
+          f"| sabir {sabir}")
+    print(f"  maskeleme     : {'KAPALI' if maske_p <= 0 else f'p={maske_p}'}")
 
     # --- veri ---
     kumeler, yukleyiciler = {}, {}
@@ -214,7 +247,11 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
           f"| test {len(kumeler['test']):,} | siniflar {siniflar}")
 
     # --- model ---
-    model = DASNet(attention="sk", n_classes=len(siniflar)).to(cihaz)
+    if model_fn is None:
+        model = DASNet(attention="sk", n_classes=len(siniflar)).to(cihaz)
+    else:
+        model = model_fn(n_classes=len(siniflar)).to(cihaz)
+        print(f"  model         : {type(model).__name__}  (model_fn ile)")
     if ayar["aktarim"]:
         yol = Path(onceden or (Path(_burada).parent / "outputs" / "pretrained" / ONCEDEN))
         if not yol.exists():
@@ -259,7 +296,8 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
         t0 = time.perf_counter()
         print(f"\n  --- epoch {ep}/{epoch}  (lr {lr_su_an:.2e}) ---", flush=True)
         tr_kayip, tr_dog = bir_epoch(model, yukleyiciler["train"], kayip_fn,
-                                     optim, cihaz, maks_batch=mb_tr, t0=t0)
+                                     optim, cihaz, maks_batch=mb_tr, t0=t0,
+                                     maske_p=maske_p)
         val = degerlendir(model, yukleyiciler["val"], kayip_fn, cihaz,
                           len(siniflar), maks_batch=mb_va)
         sure = time.perf_counter() - t0
@@ -305,10 +343,10 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
               f"{val['dogruluk']:.3f}  macro-F1 {val['macro_f1']:.4f}"
               f"{'  *' if iyilesti else ''}")
         print(f"    sure {sure/60:.1f} dk"
-              + (f"  |  {SABIR - kotu} epoch sabir kaldi" if kotu else ""))
+              + (f"  |  {sabir - kotu} epoch sabir kaldi" if kotu else ""))
 
-        if kotu >= SABIR:
-            print(f"\n  -> erken durdurma: {SABIR} epoch iyilesme yok")
+        if kotu >= sabir:
+            print(f"\n  -> erken durdurma: {sabir} epoch iyilesme yok")
             break
 
     toplam_sure = time.perf_counter() - t_bas
@@ -363,6 +401,8 @@ def kos(kosu=1, veri=VERI, cikti=CIKTI, epoch=MAKS_EPOCH, batch=BATCH,
             "tohum": TOHUM, "batch": batch, "lr_baslangic": LR,
             "label_smoothing": LABEL_SMOOTHING,
             "sinif_agirligi": bool(sinif_agirligi),
+            "maske_p": maske_p, "sabir": sabir,
+            "model": type(model).__name__,
         })
         (cikti / f"{etiket}_gecmis.json").write_text(
             json.dumps(gecmis, indent=2), encoding="utf-8")
@@ -435,7 +475,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Gercek veri egitimi")
     ap.add_argument("--olcum", action="store_true",
                     help="darbogaz olcumu, egitim yapmaz")
-    ap.add_argument("--kosu", type=int, default=1, choices=[1, 2, 3])
+    ap.add_argument("--kosu", type=int, default=1, choices=sorted(KOSULAR))
     ap.add_argument("--veri", default=str(VERI))
     ap.add_argument("--cikti", default=str(CIKTI))
     ap.add_argument("--epoch", type=int, default=MAKS_EPOCH)
@@ -445,6 +485,10 @@ if __name__ == "__main__":
                     help="dengesiz siniflar icin agirlikli kayip")
     ap.add_argument("--bellege-al", action="store_true",
                     help="train onbellegini RAM'e al (6.58 GB, OOM riski)")
+    ap.add_argument("--maske-p", type=float, default=0.5,
+                    help="zaman/frekans maskeleme olasiligi (0 = kapali)")
+    ap.add_argument("--sabir", type=int, default=SABIR,
+                    help="erken durdurma sabri")
     ap.add_argument("--hizli", action="store_true",
                     help="kisa duman testi, sonuc raporlanmaz")
     ap.add_argument("--onceden", default=None, help="aktarim paketi yolu")
@@ -454,4 +498,5 @@ if __name__ == "__main__":
     else:
         kos(a.kosu, veri=a.veri, cikti=a.cikti, epoch=a.epoch, batch=a.batch,
             isci=a.isci, sinif_agirligi=a.sinif_agirligi, hizli=a.hizli,
-            onceden=a.onceden, bellege_al=a.bellege_al)
+            onceden=a.onceden, bellege_al=a.bellege_al,
+            maske_p=a.maske_p, sabir=a.sabir)

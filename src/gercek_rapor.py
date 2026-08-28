@@ -49,6 +49,7 @@ KOSU_ACIKLAMA = {
     1: "viridis girdi, sifirdan egitim  (referans)",
     2: "viridis girdi, sentetik aktarim (1'e karsi: aktarim ise yariyor mu)",
     3: "gri girdi, sifirdan egitim      (1'e karsi: viridis zarar veriyor mu)",
+    4: "CNN-BiLSTM, yeni rejim          (zamansal dizi + maskeleme kapali)",
 }
 
 CIZGI = "-" * 78
@@ -183,6 +184,34 @@ def karsilastirmalar(kosular, yaz=print):
     else:
         yaz(f"\n  GIRDI TEMSILI   : kosu 1 ve 3 gerekli, henuz yok")
 
+    if 1 in kosular and 4 in kosular:
+        a, d4 = kosular[1]["test_macro_f1"], kosular[4]["test_macro_f1"]
+        yaz(f"\n  ZAMANSAL DIZI   (kosu 4 - kosu 1)")
+        yaz(f"    SK+havuzlama {a:.4f}  ->  BiLSTM {d4:.4f}   fark {d4-a:+.4f}")
+        yaz(f"    {_yorum(d4 - a, 'BiLSTM basi')}")
+        # Hipotez climbing/cutting hakkindaydi; noise zaten cozulmustu.
+        # Kazanc yalnizca noise'da ise hipotez DESTEKLENMEMIS demektir.
+        s1 = dict(zip(kosular[1]["siniflar"],
+                      sinif_metrikleri(kosular[1]["karisiklik"])[2]))
+        s4 = dict(zip(kosular[4]["siniflar"],
+                      sinif_metrikleri(kosular[4]["karisiklik"])[2]))
+        yaz(f"    sinif bazinda fark:")
+        for ad in kosular[1]["siniflar"]:
+            if ad in s4:
+                yaz(f"      {ad:<10} {s1[ad]:.3f} -> {s4[ad]:.3f}  "
+                    f"{s4[ad]-s1[ad]:+.3f}")
+        zor = [c for c in ("climbing", "cutting") if c in s1 and c in s4]
+        if zor:
+            kazanc = sum(s4[c] - s1[c] for c in zor) / len(zor)
+            yaz(f"    -> climbing/cutting ortalama fark: {kazanc:+.4f}")
+            if kazanc <= 0:
+                yaz(f"       HIPOTEZ DESTEKLENMEDI: zamansal dizi, hedeflenen")
+                yaz(f"       climbing/cutting ayrimini iyilestirmedi.")
+        yaz(f"\n    ATIF UYARISI: kosu 4 mimariyi VE rejimi (maskeleme kapali,")
+        yaz(f"    uzun butce) birlikte degistiriyor. Fark hangisinden geldigi")
+        yaz(f"    bilinmiyor. Atif icin SK modelini de ayni rejimle kosmak")
+        yaz(f"    gerekir: --kosu 1 --maske-p 0 --epoch 80 --sabir 10")
+
     yaz(f"\n  UYARI: her karsilastirma TEK kosu ciftine dayaniyor. Fark"
         f"\n  kucukse (|fark| < 0.01) tohum gurultusu olabilir; kesin konusmak"
         f"\n  icin farkli tohumlarla tekrar gerekir.")
@@ -207,7 +236,7 @@ def _plt():
         return None
 
 
-RENKLER = {1: "tab:blue", 2: "tab:orange", 3: "tab:green"}
+RENKLER = {1: "tab:blue", 2: "tab:orange", 3: "tab:green", 4: "tab:red"}
 
 
 def egriler(kosular, cikti):
@@ -429,7 +458,7 @@ def rapor(cikti):
     if not kosular:
         print(f"  *_gecmis.json bulunamadi. Kosu bitmemis olabilir.")
         return 1
-    eksik = [n for n in (1, 2, 3) if n not in kosular]
+    eksik = [n for n in (1, 2, 3, 4) if n not in kosular]
     print(f"  bulunan kosular: {sorted(kosular)}"
           + (f"   eksik: {eksik}" if eksik else "   (hepsi tamam)"))
 
