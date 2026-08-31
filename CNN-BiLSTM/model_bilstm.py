@@ -71,6 +71,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # src/ yolu -- veri hatti ve DASNet oradan geliyor, kopyalanmiyor
 _KOK = Path(__file__).resolve().parent.parent
@@ -128,8 +129,19 @@ class DASNetBiLSTM(nn.Module):
 
         # --- FREKANS SIKISTIRMA: (B,C,F,T) -> (B,C,frekans_bin,T) ---
         self.frekans_bin = frekans_bin
-        self.frekans_havuz = nn.AdaptiveAvgPool2d((frekans_bin, None))
         self.adim_boyutu = self.out_channels * frekans_bin      # 256
+
+        # Havuzlama cekirdegi KURULUM ANINDA, Python tam sayisi olarak
+        # hesaplaniyor. x.shape[2]'den turetseydik ONNX izlemesinde tensor
+        # olarak gorulur ve ihracat "kernel size is not constant" ile
+        # patlardi. Omurga uc kez 2'ye boldugu icin frekans ekseni
+        # INPUT_H / 8 = 28.
+        frek_cikis = cfg.INPUT_H // 8
+        if frek_cikis % frekans_bin != 0:
+            raise ValueError(
+                f"frekans ekseni ({frek_cikis}) frekans_bin'e ({frekans_bin}) "
+                f"tam bolunmuyor; sabit cekirdekli havuzlama kurulamaz")
+        self._frek_kernel = frek_cikis // frekans_bin          # 7
 
         # --- ZAMANSAL DIZI ---
         self.lstm = nn.LSTM(
@@ -156,6 +168,25 @@ class DASNetBiLSTM(nn.Module):
             self.features[son] = nn.MaxPool2d(kernel_size=(2, 1),
                                               stride=(2, 1))
 
+    def _frekans_sikistir(self, x):
+        """
+        Frekans eksenini `frekans_bin` bine indirir, zaman eksenine dokunmaz.
+
+        NEDEN AdaptiveAvgPool2d DEGIL:
+        AdaptiveAvgPool2d((frekans_bin, None)) kullaniyorduk. Sonuc dogruydu
+        ama ONNX'e IHRAC EDILEMIYOR -- `None` cikti boyutunu sabit olmaktan
+        cikariyor ve ihracat "output_size is not constant" ile patliyor.
+
+        Frekans ekseni 28 (224/8) ve frekans_bin 4 oldugundan 28/4 = 7 tam
+        bolunuyor; sabit cekirdekli ortalama havuzlama adaptive havuzlamayla
+        BIREBIR AYNI sonucu veriyor (birim testinde dogrulaniyor).
+
+        Cekirdek __init__'te Python tam sayisi olarak hesaplandi; buradan
+        x.shape'e bakmiyoruz, cunku izlenen bir tensor sekli ONNX'te sabit
+        sayilmaz.
+        """
+        return F.avg_pool2d(x, kernel_size=(self._frek_kernel, 1))
+
     # -----------------------------------------------------------
     def dizi_cikar(self, x):
         """
@@ -167,7 +198,7 @@ class DASNetBiLSTM(nn.Module):
         """
         x = self.features(x)                     # (B, C, F, T)
         x = self.attention(x)                    # (B, C, F, T)
-        x = self.frekans_havuz(x)                # (B, C, frekans_bin, T)
+        x = self._frekans_sikistir(x)            # (B, C, frekans_bin, T)
         B, C, F, T = x.shape
         x = x.permute(0, 3, 1, 2)                # (B, T, C, F)
         return x.reshape(B, T, C * F)            # (B, T, C*F)
