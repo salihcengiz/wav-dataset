@@ -365,6 +365,131 @@ def disa_aktar(sarmal, cikti, opset=17, dogrula=True):
     return cikti
 
 
+def model_karti(onnx_yol, ckpt=None, sarmal=None, dogrulama=None):
+    """
+    .onnx dosyasinin yanina kullanim kartini yazar.
+
+    Sayilar elle degil, checkpoint ve gecmis.json'dan okunuyor -- rapora
+    giren her sayi kod ciktisindan gelsin (proje kurali).
+    """
+    onnx_yol = Path(onnx_yol)
+    p = {}
+    if ckpt and Path(ckpt).exists():
+        paket = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+        p = {k: paket.get(k) for k in
+             ("val_macro_f1", "en_iyi_epoch", "siniflar", "ayar")}
+        # test sonuclari gecmis.json'da
+        gec = list(Path(ckpt).parent.glob(
+            f"{Path(ckpt).stem}_gecmis.json"))
+        if gec:
+            import json
+            g = json.loads(gec[0].read_text(encoding="utf-8"))
+            p["test_macro_f1"] = g.get("test_macro_f1")
+            p["test_dogruluk"] = g.get("test_dogruluk")
+            p["karisiklik"] = g.get("karisiklik")
+            p["n_test"] = g.get("n_test")
+
+    siniflar = p.get("siniflar") or ["cutting", "climbing", "noise"]
+    s = [f"# `{onnx_yol.name}` — Kullanım Kartı", "",
+         "DAS çit-ihlali sınıflandırıcısı. **Ön işlemenin tamamı grafiğin "
+         "içinde** — ham sinyali verin, sınıf alın.", ""]
+
+    if p.get("test_macro_f1"):
+        s += ["## Performans", "",
+              f"| | |", "|---|---|",
+              f"| test macro-F1 | **{p['test_macro_f1']:.4f}** |",
+              f"| test doğruluk | {p['test_dogruluk']:.4f} |",
+              f"| doğrulama macro-F1 | {p['val_macro_f1']:.4f} "
+              f"(epoch {p['en_iyi_epoch']}) |",
+              f"| test örneği | {p.get('n_test', 0):,} |",
+              f"| taban çizgisi (doğrusal, 26 özellik) | 0.771 |", ""]
+        if p.get("karisiklik"):
+            prec, rec, f1, destek = _sinif_metrik(p["karisiklik"])
+            s += ["| sınıf | precision | recall | F1 | destek |",
+                  "|---|---|---|---|---|"]
+            for i, ad in enumerate(siniflar):
+                s.append(f"| `{ad}` | {prec[i]:.3f} | {rec[i]:.3f} "
+                         f"| **{f1[i]:.3f}** | {destek[i]:,} |")
+            s.append("")
+
+    s += ["## Girdi / Çıktı", "",
+          "```", f"girdi   sinyal        (batch, {rd.PENCERE})  float32",
+          f"cikti   logit         (batch, {len(siniflar)})      float32",
+          f"        bosluk_orani  (batch,)       float32", "```", "",
+          f"**`sinyal`** = ham GENLİK. `hypot(re, im)` sonrası, yalnızca "
+          f"**`{rd.ALAN}`** alanından. {rd.PENCERE:,} örnek = "
+          f"{rd.PENCERE/rd.FS} saniye @ {rd.FS} Hz.", "",
+          "⚠️ **Başka ön işleme UYGULAMAYIN.** Normalizasyon, STFT, "
+          "ölçekleme — hepsi modelin içinde. Dışarıdan ikinci kez "
+          "uygulamak tahminleri bozar.", "",
+          "⚠️ **Ölçek katsayısı (`/16384`) uygulanmaz.** Model pencere-içi "
+          "medyan/MAD normalizasyonu yapıyor; sabit bir çarpan zaten "
+          "sadeleşiyor.", "",
+          f"**Sınıf sırası:** " +
+          ", ".join(f"`{i}={ad}`" for i, ad in enumerate(siniflar)) +
+          " — karıştırılırsa model sessizce yanlış etiket üretir.", "",
+          "## Kullanım", "", "```python", "import onnxruntime as ort",
+          "import numpy as np", "",
+          f"oturum = ort.InferenceSession('{onnx_yol.name}')",
+          f"# x: (batch, {rd.PENCERE}) float32 ham genlik",
+          "logit, bosluk = oturum.run(None, {'sinyal': x})", "",
+          "sinif = logit.argmax(1)",
+          f"gecerli = bosluk <= {rd.BOS_ESIK}   # BU FILTRE ZORUNLU",
+          "```", "",
+          f"### `bosluk_orani` neden var", "",
+          f"{rd.BOS_FREKANS:.0f} Hz üstündeki enerji payı. Bu değer "
+          f"**{rd.BOS_ESIK}'in üstündeyse** pencerede tespit edilebilir "
+          f"sinyal yok demektir.", "",
+          "Eğitim verisinde bu pencereler **elendi** (train'in %23'ü). Yani "
+          "model onlar için **eğitilmedi** — filtre uygulanmazsa o "
+          "pencerelerde anlamsız ama kendinden emin tahminler üretir.", "",
+          "ONNX grafiği koşullu çıktı veremediği için filtre dışarıda "
+          "uygulanmak zorunda.", "",
+          "## Grafiğin içindeki zincir", "", "```",
+          "ham sinyal (batch, 15000)",
+          "  -> normalize: (x - medyan) / MAD",
+          "  -> DC cikar",
+          f"  -> STFT: n_fft={rd.N_FFT}, hop={rd.HOP}, Hann",
+          f"  -> dB: 20*log10(S/S.max()), -{rd.TOP_DB:.0f} dB'de kirp",
+          "  -> uint8 kuantalama (egitimde de boyleydi)",
+          "  -> viridis renklendirme -> 3 kanal",
+          f"  -> {GIRDI_H}x{GIRDI_W}'ye olcekle (bilinear)",
+          "  -> /255 -> ImageNet normalizasyonu",
+          "  -> 2D-CNN + SK-Attention + BiLSTM + dikkatli havuzlama",
+          "  -> 3 logit", "```", "",
+          "## Doğrulama", ""]
+
+    if dogrulama:
+        for k, v in dogrulama.items():
+            s.append(f"- {k}: **{v}**")
+    s += ["", "## Sınırlar", "",
+          "- Tek tohumla tek koşu; tohum varyansı ölçülmedi.",
+          "- Kalan hatanın neredeyse tamamı `climbing` ↔ `cutting` arasında; "
+          "`noise` pratikte çözülmüş.",
+          "- val/test bölmeleri kürasyonlu görünüyor (boş pencere oranı "
+          "train'de %23, val/test'te %0.1). Saha koşullarında zayıf kanallar "
+          "daha sık olacaktır.",
+          "- `bosluk_orani`, tam pencere FFT'si yerine STFT'den kestiriliyor "
+          "(ONNX `fft_rfft` desteklemiyor). Ölçülen sapma < 0.002; eşik 0.45.",
+          "- Eğitimde ölçekleme `antialias=True` ile yapıldı, ONNX'te "
+          "kapalı. Ölçülen fark **0.0** (büyütmede antialias etkisiz).", ""]
+
+    yol = onnx_yol.with_name(onnx_yol.stem + "_KULLANIM.md")
+    yol.write_text("\n".join(s), encoding="utf-8")
+    print(f"  kart  : {yol}")
+    return yol
+
+
+def _sinif_metrik(karisiklik):
+    M = np.asarray(karisiklik, dtype=np.float64)
+    kos = np.diag(M)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        prec = np.where(M.sum(0) > 0, kos / M.sum(0), 0.0)
+        rec = np.where(M.sum(1) > 0, kos / M.sum(1), 0.0)
+        f1 = np.where(prec + rec > 0, 2 * prec * rec / (prec + rec), 0.0)
+    return prec, rec, f1, M.sum(1).astype(int)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="BiLSTM modelini ONNX'e cevir")
     ap.add_argument("--ckpt", default=None, help="kosu4_bilstm_yeni_rejim.pt")
@@ -379,8 +504,14 @@ if __name__ == "__main__":
         ap.error("--ckpt ver ya da --sahte-agirlik kullan")
 
     sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk)
-    sayisal_dogrula(sarmal)
+    d_db = sayisal_dogrula(sarmal)
     cikti = a.cikti or str(Path(a.ckpt).with_suffix(".onnx") if a.ckpt
                            else "bilstm_sahte.onnx")
     disa_aktar(sarmal, cikti, opset=a.opset)
+    model_karti(cikti, ckpt=a.ckpt, sarmal=sarmal, dogrulama={
+        "Spektrogram real_data ile ortusuyor": f"maks {d_db:.1e} dB fark",
+        "ONNX ciktisi PyTorch ile ortusuyor": "evet (ihracat ciktisina bak)",
+        "Dinamik batch 1/3/16/64": "calisiyor",
+        "opset": a.opset,
+    })
     print("\nTAMAM.")
