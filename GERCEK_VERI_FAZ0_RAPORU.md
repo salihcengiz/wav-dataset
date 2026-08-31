@@ -459,16 +459,21 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
 - [~] Mevcut RELATIONNET sonuçları — **kapsam dışı bırakıldı**, kendi
       ölçümümüzü yaptık
 
-### Sırada — gerçek eğitim hattı
-- [x] Ortam kontrolü → **torch YOK**, GPU teyit edilmeli (Bölüm 8.5)
-- [x] Yükleme hızı ölçümü → 3.87 ms/satır gruplu (Bölüm 8.5)
-- [x] Alt örneklem stratejisi → **k=2** seçildi (Bölüm 8.5)
-- [ ] `--kesif`: kenar/iç kanal boşluk oranı — kanal seçim kuralını doğrula
-- [ ] Spektrogram önbelleği kur (`src/onbellek_kur.py`) + doğrula
-- [ ] **PyTorch kurulumu** — sorumluya sorulacak (Bölüm 7, madde 8)
+### Gerçek eğitim hattı — ✅ TAMAMLANDI
 
-- [ ] PyTorch `Dataset`: `real_data.pencere_yukle` → `spektrogram` → 224×320
-- [ ] `load_pretrained(model, bundle)` ile aktarım, `classifier` sıfırdan
+- [x] Ortam kontrolü → GPU var (RTX 3090), torch kuruldu (Bölüm 8.5)
+- [x] Yükleme hızı ölçümü → 3.87 ms/satır gruplu (Bölüm 8.5)
+- [x] Alt örneklem → **k=0, tüm satırlar** (Bölüm 8.5)
+- [x] Spektrogram önbelleği kuruldu ve doğrulandı (Bölüm 8.6)
+- [x] PyTorch `Dataset` (`src/gercek_veri_kumesi.py`)
+- [x] Beş eğitim koşusu
+- [~] `--kesif` (kanal seçim kuralı) — bir kez çalıştırıldı, sonucu
+      **karıştırıcı etkiler yüzünden yorumlanamadı** (aşağıda). Düzeltilmiş
+      sürüm yazıldı ama k=0 seçilince gereksizleşti, tekrar koşulmadı
+- [~] Aktarım (`load_pretrained`) — **denendi, işe yaramadı** (koşu 2)
+
+**Sonuç: test macro-F1 0.9390** (CNN-BiLSTM). Tam kayıt:
+`GERCEK_VERI_EGITIM_SONUCLARI.md`
 
 ### Spektrogram hattı — kesinleşmiş tarif
 
@@ -490,14 +495,21 @@ aynı sütun `0` ve `1` karışık, CSV yine "climbing" diyor.
       aynı fonksiyonu çağıracak, ekibin yaşadığı tutarsızlık tekrarlanmayacak
 - [ ] Boş pencere eşiği ölçümle belirlenecek (500+ Hz enerji payı > 0.45 → düz)
 
-### Aktarım
-- [ ] `das_2dcnn_sk_v1.pt` omurgası + yeni sınıflandırıcı
-      (`load_pretrained(model, bundle)`)
-- [ ] Sınıf sayısı 3 (climbing/cutting/noise) — sentetikteki 3 ile aynı sayı
-      ama farklı sınıflar, `classifier` sıfırdan başlayacak
-- [ ] Pencere 7.5 s @ 2000 Hz. Sentetik model 10 s ile eğitilmişti; spektrogram
-      224×320'ye ölçeklendiği için aktarımı bozmuyor, sadece piksel başına
-      düşen süre değişiyor (31 ms → 23 ms)
+### Aktarım — ❌ DENENDI, İŞE YARAMADI
+
+- [x] `das_2dcnn_sk_v1.pt` omurgası + sıfırdan `classifier`
+      (`load_pretrained(model, bundle, atla=("classifier",))`)
+- [x] `classifier` bilerek atlandı: sınıf **sayısı** ikisinde de 3 olduğu
+      için şekil kontrolü yakalayamıyordu, ama kavramlar farklı
+      (`chain_link_climbing`/`fence_cutting`/`metal_bending` vs
+      `cutting`/`climbing`/`noise`) ve `noise`'un karşılığı yok
+
+**Ölçüm (koşu 2 vs koşu 1): −0.0185.** Aktarımlı model daha düşük bitti,
+daha erken durdu ve erken epoch'larda bile geride başladı. 19 bağımsız
+sentetik kayıttan öğrenilen filtreler 21.101 gerçek dosyanın yanında avans
+sağlamıyor.
+
+**Sentetik önceden eğitilmiş model artık kullanılmıyor.**
 
 ---
 
@@ -606,7 +618,43 @@ Yeni kural: `linspace(0, n-1, k+2)[1:-1]` — uçlar dışarıda, seçilenler
 aralık içine eşit dağılıyor. (n=14 için k=1 → [7], k=2 → [4, 9].)
 
 Bu kuralın gerekçesi hâlâ bir **tahmin**; `onbellek_kur.py --kesif`
-kenar/iç boşluk oranını ölçüp doğrulayacak.
+kenar/iç boşluk oranını ölçüp doğrulayacaktı.
+
+#### `--kesif` çalıştırıldı — sonuç yorumlanamadı (karıştırıcı etki)
+
+300 dosya, 4.494 pencere. Ham tablo:
+
+| konum | pencere | boş oranı |
+|---|---|---|
+| İLK (uç) | 438 | %8.0 |
+| 0-25% | 902 | %13.1 |
+| 25-50% | 1.074 | %14.8 |
+| 50-75% | 922 | %29.7 |
+| 75-100% | 745 | %34.5 |
+| SON (uç) | 413 | %14.8 |
+
+İlk bakışta "uçlar daha az boş" görünüyor (uç %11.3, iç %22.2, z = −8.5) —
+yani tahminin **tersi**. Ama tablo simetrik değil, tek yönlü bir gradyan
+gösteriyor. **Bu, karıştırıcı etkinin izi.**
+
+İki karıştırıcı var:
+
+1. **Kanal sayısı.** 3 kanallı bir dosya yalnızca UÇ kovalarına katkı
+   verir, iç kovalara giremez. Kovalar aynı dosyaları örneklemiyor.
+2. **Sınıf.** `noise`'da boş oranı %1, `cutting`'de %25. Az kanallı
+   dosyalar ağırlıklı `noise` ise, "uçlar daha az boş" sonucu tamamen
+   bundan doğar.
+
+→ `kesif()` **eşleştirilmiş dosya-içi test** ile yeniden yazıldı: her
+dosyada kendi uç kanalları kendi iç kanallarıyla karşılaştırılıyor, iki
+karıştırıcı da tanım gereği sabitleniyor. Yöntem iki sentetik senaryoda
+doğrulandı (gerçek etki → yakalıyor; sahte etki → tuzağa düşmüyor).
+
+**Ama k=0 seçilince tüm kanallar kullanıldı ve soru ortadan kalktı;
+düzeltilmiş sürüm çalıştırılmadı.**
+
+Bu, DURUM.md Bölüm 6'daki "tek değişkenli F testine güvenmek" dersinin
+ikinci örneği: kontrolsüz marjinal karşılaştırma yanıltır.
 
 ### Verilen kararlar
 

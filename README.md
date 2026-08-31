@@ -1,3 +1,12 @@
+> ⚠️ **Bu dosya Aşama 1'i (sentetik veri) anlatır ve o kapsamda geçerlidir.**
+> Proje Aşama 2'de (gerçek saha verisi) ve **giriş noktası
+> [`DURUM.md`](DURUM.md)** — oradan başlayın.
+>
+> Aşağıda "sentetik veri ön eğitim için kullanılacak" beklentisi geçiyor.
+> **Bu ölçüldü ve çürütüldü:** aktarım gerçek veride −0.019 getirdi
+> (`GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 4). Sentetik aşamanın kalıcı
+> katkısı mimari ve metodoloji oldu, ağırlıklar değil.
+
 # DAS Sentetik Veri Üretim Pipeline'ı
 
 Ses kayıtlarından (fence cutting, metal bending, chain-link fence climbing)
