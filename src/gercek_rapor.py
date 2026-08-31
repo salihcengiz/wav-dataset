@@ -50,6 +50,7 @@ KOSU_ACIKLAMA = {
     2: "viridis girdi, sentetik aktarim (1'e karsi: aktarim ise yariyor mu)",
     3: "gri girdi, sifirdan egitim      (1'e karsi: viridis zarar veriyor mu)",
     4: "CNN-BiLSTM, yeni rejim          (zamansal dizi + maskeleme kapali)",
+    5: "SK + gri, YENI REJIM            (3'e karsi: rejim etkisi tek basina)",
 }
 
 CIZGI = "-" * 78
@@ -212,6 +213,38 @@ def karsilastirmalar(kosular, yaz=print):
         yaz(f"    bilinmiyor. Atif icin SK modelini de ayni rejimle kosmak")
         yaz(f"    gerekir: --kosu 1 --maske-p 0 --epoch 80 --sabir 10")
 
+    if 3 in kosular and 5 in kosular:
+        e, y = kosular[3]["test_macro_f1"], kosular[5]["test_macro_f1"]
+        rejim = y - e
+        yaz(f"\n  REJIM ETKISI    (kosu 5 - kosu 3, ikisi de SK + gri)")
+        yaz(f"    eski rejim {e:.4f}  ->  yeni rejim {y:.4f}   fark {rejim:+.4f}")
+        yaz(f"    {_yorum(rejim, 'Yeni rejim (maskeleme kapali, uzun butce)')}")
+
+        # MIMARI ETKISI -- fark-farki (difference in differences).
+        # kosu4-kosu1 mimari VE rejimi birlikte tasiyor; rejim payini
+        # kosu5-kosu3'ten cikarip kalani mimariye atfediyoruz.
+        if 1 in kosular and 4 in kosular:
+            birlikte = kosular[4]["test_macro_f1"] - kosular[1]["test_macro_f1"]
+            mimari = birlikte - rejim
+            yaz(f"\n  MIMARI ETKISI (tahmin, fark-farki)")
+            yaz(f"    mimari + rejim (kosu 4 - kosu 1) : {birlikte:+.4f}")
+            yaz(f"    yalniz rejim   (kosu 5 - kosu 3) : {rejim:+.4f}")
+            yaz(f"    {'-' * 44}")
+            yaz(f"    BiLSTM'e kalan                   : {mimari:+.4f}")
+            if mimari > 0.02:
+                yaz(f"    -> Kazancin BUYUK KISMI mimariden geliyor.")
+            elif mimari > 0.005:
+                yaz(f"    -> Mimari katki var ama rejim de onemli pay aliyor.")
+            elif mimari > -0.005:
+                yaz(f"    -> Kazanc neredeyse TAMAMEN rejimden; BiLSTM'in ek")
+                yaz(f"       karmasikligi kendini savunmuyor.")
+            else:
+                yaz(f"    -> Rejim tek basina daha iyi; BiLSTM zarar veriyor.")
+            temsil = kosular[1]["test_macro_f1"] - kosular[3]["test_macro_f1"]
+            yaz(f"    VARSAYIM: rejim etkisi gri ile viridis'te benzer.")
+            yaz(f"    (viridis - gri = {temsil:+.4f}, yani temsil farki kucuk;")
+            yaz(f"     varsayim makul ama VARSAYIM -- rapora oyle yazilmali.)")
+
     yaz(f"\n  UYARI: her karsilastirma TEK kosu ciftine dayaniyor. Fark"
         f"\n  kucukse (|fark| < 0.01) tohum gurultusu olabilir; kesin konusmak"
         f"\n  icin farkli tohumlarla tekrar gerekir.")
@@ -236,7 +269,8 @@ def _plt():
         return None
 
 
-RENKLER = {1: "tab:blue", 2: "tab:orange", 3: "tab:green", 4: "tab:red"}
+RENKLER = {1: "tab:blue", 2: "tab:orange", 3: "tab:green", 4: "tab:red",
+           5: "tab:purple"}
 
 
 def egriler(kosular, cikti):
@@ -458,7 +492,7 @@ def rapor(cikti):
     if not kosular:
         print(f"  *_gecmis.json bulunamadi. Kosu bitmemis olabilir.")
         return 1
-    eksik = [n for n in (1, 2, 3, 4) if n not in kosular]
+    eksik = [n for n in (1, 2, 3, 4, 5) if n not in kosular]
     print(f"  bulunan kosular: {sorted(kosular)}"
           + (f"   eksik: {eksik}" if eksik else "   (hepsi tamam)"))
 

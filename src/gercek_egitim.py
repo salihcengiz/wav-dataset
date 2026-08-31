@@ -38,6 +38,10 @@ Sonradan eklendi:
     4  viridis   sifirdan    CNN-BiLSTM, yeni rejim (maskeleme kapali,
                              tavan 80). Modeli CNN-BiLSTM/egitim_bilstm.py
                              `model_fn` ile veriyor.
+    5  gri       sifirdan    ATIF KOSUSU: kosu 3 ile ayni mimari/girdi,
+                             yalniz yeni rejim. 3'e karsi farki REJIM
+                             etkisini verir; kosu 4'un kazancinin ne
+                             kadarinin MIMARIDEN geldigi buradan cikar.
 
 Her koşuda tek degisken degisiyor. Ikisini birden degistirmek (orn.
 aktarim+viridis vs sifirdan+gri) hangi etkinin fark yarattigini
@@ -100,6 +104,12 @@ KOSULAR = {
     # veriyor; buradaki girdi yalnizca renk/aktarim ayarini ve cikti adini
     # belirliyor.
     4: {"ad": "bilstm_yeni_rejim", "renk": "viridis", "aktarim": False},
+    # 5: ATIF KOSUSU. Kosu 3 ile AYNI (SK + gri + sifirdan), tek fark
+    # yeni rejim (maskeleme kapali, tavan 80, sabir 10). Kosu 3'e karsi
+    # farki, REJIM etkisini tek basina verir; kosu 4'un kazancinin ne
+    # kadarinin mimariden geldigi buradan cikarilir.
+    # Ayri numara: kosu 3'un dosyalarinin uzerine YAZMAZ.
+    5: {"ad": "gri_sifirdan_yeni_rejim", "renk": "gri", "aktarim": False},
 }
 
 
