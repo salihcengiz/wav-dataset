@@ -5,7 +5,7 @@
 >
 > **En iyi: CNN-BiLSTM, test macro-F1 0.9390** (taban çizgisi 0.771, **+0.168**)
 >
-> **Son güncelleme:** 2026-08-28
+> **Son güncelleme:** 2026-09-01
 
 ---
 
@@ -282,7 +282,9 @@ sorun yok** — dizi uzunluğu sabit (40 adım).
   eğitimde bu pencereler elendi, model onlar için eğitilmedi
 
 Çıktı: `egitim_ciktilari/paket/bilstm_kosu4.onnx` (2.1 MB) +
-`bilstm_kosu4_KULLANIM.md` (script üretiyor).
+`bilstm_kosu4_KULLANIM.md` — ✅ **ikisi de üretildi** (2026-09-01 doğrulandı).
+Kart `--ckpt` ile koşulduğu için performans tablosu dolu; sayılar
+checkpoint ve `gecmis.json`'dan geliyor.
 
 ---
 
@@ -341,8 +343,33 @@ bölge 0 yapılıyor (normalize uzayında veri seti ortalaması).
 ### ONNX yeniden üretim
 
 ```
-opset_version=17,  do_constant_folding=True,  dynamo=False
+opset_version=13,  do_constant_folding=True,  dynamo=False
 ```
+
+⚠️ **opset 13** (2026-09-01'de 17'den düşürüldü, sorumlunun isteği).
+
+opset = ONNX operatör kütüphanesinin sürümü; grafikteki her düğümün hangi
+tanıma göre yorumlanacağını sabitler. Bir çalışma zamanı, desteklediği en
+yüksek opset'in üstündeki dosyayı **açamaz** — yani opset bir uyumluluk
+eşiğidir, matematiği ya da hızı değiştirmez. Geriye dönük uyumlu: düşük
+opset'li dosyayı yeni çalışma zamanı okur, tersi olmaz.
+
+13'e düşürmek bu grafik için **bedelsiz** çıktı çünkü opset 17'ye özgü
+hiçbir operatör kullanılmıyor — 17'nin bu projeye getirdiği tek yenilik
+native `STFT`/`DFT` operatörleriydi ve STFT zaten elle yazılmıştı
+(unfold + matmul). Medyan `TopK` tabanlı, havuzlama sabit çekirdekli,
+antialias kapalı. Grafikteki en yeni gereksinim `Resize-13`; `LSTM`
+opset 7'den, `Softmax-13` 13'ten mevcut.
+
+**Ölçüldü** (`--opset-karsilastir`, sahte ağırlıklarla yerelde):
+
+```
+opset  13: ihrac OK  (2.1 MB)   PyTorch'a fark 4.10e-08
+opset  17: ihrac OK  (2.1 MB)   PyTorch'a fark 4.10e-08
+opset 13 <-> 17 logit farki   :  0.00e+00
+```
+
+Dosya boyutu aynı, dinamik batch 13'te de çalışıyor.
 
 ⚠️ **`dynamo=False` zorunlu.** torch 2.9+ varsayılan olarak yeni
 (torch.export tabanlı) ihracatçıyı kullanıyor ve o `onnxscript` istiyor —
@@ -381,7 +408,8 @@ olabilir" uyarısı basıyor.
 | `src/model.py` | `load_pretrained(..., atla=("classifier",))` |
 | `CNN-BiLSTM/model_bilstm.py` | Yeni mimari; ONNX için sabit çekirdekli havuzlama |
 | `CNN-BiLSTM/egitim_bilstm.py` | İnce koşturucu, kendi eğitim döngüsü yok |
-| `CNN-BiLSTM/onnx_disa_aktar.py` | Sarmalayıcı + ihracat + doğrulama + kullanım kartı |
+| `CNN-BiLSTM/onnx_disa_aktar.py` | Sarmalayıcı + ihracat + doğrulama + kullanım kartı. **opset varsayılanı 13**; `opset_karsilastir()` ve `--opset-karsilastir` eklendi; `disa_aktar()` artık ölçülen logit farkını **döndürüyor** ve kart o sayıyı yazıyor (eskiden "ihracat çıktısına bak" diyordu) |
+| `src/gercek_export.py` | **İki mimariyi de paketliyor.** `MIMARILER` (koşu → sınıf), `model_kur()` / `model_kur_mimariden()` / `mimari_cikar()`. `mimari` bloğu elle yazılmıyor, kurulan modelden okunuyor. `--kosu` varsayılanı 4. Kart, `.pt` (görüntü) ile `.onnx` (ham sinyal) ayrımını **en üstte** gösteriyor |
 
 ### Düzeltilen iki sessiz hata
 
@@ -395,13 +423,27 @@ olabilir" uyarısı basıyor.
 
 ## 10. AÇIK İŞLER
 
-- [ ] **Teslim paketini koşu 4'e güncelle** — paket hâlâ koşu 3'ünkü.
-      `gercek_export.py` `DASNet`'i sabit kuruyor, BiLSTM için küçük bir
-      ekleme gerekiyor
-- [ ] `gercek_rapor.py`'yi sunucuda beş koşuyla çalıştır (grafikler +
-      markdown özeti)
-- [ ] ONNX kullanım kartını sunucuda üret (script hazır, bir kez daha
-      çalıştırılmalı)
+- [x] ~~**Teslim paketini koşu 4'e güncelle**~~ — **kod hazır**
+      (2026-09-01). `gercek_export.py` artık `MIMARILER` ile iki mimariyi
+      de kuruyor; `mimari` bloğu canlı modelden okunuyor. Yerelde sahte
+      checkpoint'le iki yol da test edildi (BiLSTM 430.932 / DASNet 34.835
+      parametre, `strict=True` yükleme, kart içeriği). **Sunucuda
+      çalıştırılmalı:** `python gercek_export.py --kosu 4`
+- [x] ~~Kart düzeltmesi (a)~~ — `disa_aktar()` ölçülen logit farkını
+      döndürüyor, kart artık sayıyı yazıyor
+- [x] ~~ONNX kullanım kartını sunucuda üret~~ — **yapıldı**,
+      `paket/bilstm_kosu4_KULLANIM.md`. İçeriği doğrulandı: performans
+      tablosu, sınıf metrikleri, kullanım şartları, sınırlar hepsi var.
+      İki küçük eksik kaldı (aşağıda)
+- [ ] **Kart düzeltmesi (b)** — pencereyi **15.000 örneğe oturtma** tarifi
+      kartta yok (uzunsa enerji merkezine kırp, kısaysa yansıtmalı doldur).
+      `hypot(re,im)`/`P` seçimi gibi bu da grafiğin **dışında**, çağıranın
+      yapması gerekiyor. Sorumluya iletilmeli
+- [ ] **ONNX'i opset 13 ile sunucuda yeniden üret** ve kartıyla birlikte
+      sorumluya gönder — gerçek ağırlıklarla doğrulama sayıları da
+      tazelenir
+- [ ] ~~`gercek_rapor.py`'yi beş koşuyla çalıştır~~ — **ertelendi**
+      (2026-09-01): böyle bir rapor şu an sorumludan beklenmiyor
 - [ ] **Koşu 6**: geniş SK + yeni rejim — kapasite mi zaman mı
 - [ ] Sorumluya özet
 

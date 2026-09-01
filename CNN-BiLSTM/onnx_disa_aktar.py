@@ -60,9 +60,37 @@ Gather/MatMul/Mul gibi temel islemler kullanildigi icin her opset'te
 guvenle ihrac edilir. Sonuc np.fft.rfft ile ayni (birim testinde
 karsilastiriliyor).
 
+=== OPSET NEDEN 13 ===
+
+opset = ONNX operator set surumu. Grafikteki her dugumun (Conv, MatMul,
+LSTM, Resize...) hangi tanimina gore yorumlanacagini sabitler. Bir calisma
+zamani (onnxruntime, TensorRT, gomulu SDK) destekledigi en yuksek opset'in
+USTUNDEKI dosyayi ACAMAZ. Yani opset bir UYUMLULUK ESIGIDIR -- modelin
+matematigini ya da hizini degistirmez, yalnizca tasinabilirligini.
+
+Geriye donuk uyumlu: dusuk opset'li dosyayi yeni calisma zamani okur,
+tersi olmaz. Bu yuzden dusuk opset "daha kotu" degil, DAHA TASINABILIR.
+
+Sorumlu 13 istedi (hedef calisma zamani 17'yi desteklemiyor). Bu grafik
+icin BEDELSIZ, cunku opset 17'ye ozgu hicbir operator kullanilmiyor:
+
+  - STFT elle yazildi (unfold + matmul); opset 17'nin native STFT/DFT
+    operatorleri kullanilmiyor -- 17'nin bu projeye getirdigi TEK yenilik
+    tam da o operatorlerdi
+  - medyan siralama tabanli (TopK), aten::median yok
+  - frekans havuzlamasi sabit cekirdekli, AdaptiveAvgPool yok
+  - antialias kapali
+
+Grafikteki en yeni gereksinim Resize-13. LSTM opset 7'den, Softmax-13
+13'ten mevcut. Yani 13 tabanin ta kendisi, sikistirma degil.
+
+Degisiklik OLCULDU: 13 ve 17 ile ihrac edilen grafiklerin logit ciktisi
+karsilastirildi (asagidaki dogrulama akisi).
+
 === KULLANIM ===
 
     python onnx_disa_aktar.py --ckpt /tf/.../kosu4_bilstm_yeni_rejim.pt
+    python onnx_disa_aktar.py --ckpt ... --opset 17   # gerekirse yukselt
 
     # yerelde rastgele agirliklarla sadece hattı sinamak icin:
     python onnx_disa_aktar.py --sahte-agirlik
@@ -293,10 +321,21 @@ def sayisal_dogrula(sarmal, n=4, tohum=0):
     return float(d_db)
 
 
-def disa_aktar(sarmal, cikti, opset=17, dogrula=True):
+def disa_aktar(sarmal, cikti, opset=13, dogrula=True):
+    """
+    Grafigi .onnx'e yazar ve PyTorch ile ortustugunu OLCER.
+
+    Donen: (cikti_yolu, logit_farki)
+
+    logit_farki, PyTorch ile ONNX ciktisi arasindaki maks mutlak fark;
+    dogrulama yapilmadiysa None. Model kartina BU SAYI yaziliyor -- daha
+    once kart "ihracat ciktisina bak" diyordu, yani rapora giren bir sayi
+    konsola basilip kayboluyordu (proje kurali: her sayi kod ciktisindan).
+    """
     print("\n" + "=" * 70)
     print(f"ONNX IHRACATI -> {cikti}  (opset {opset})")
     print("=" * 70)
+    d_logit = None
     ornek = torch.randn(2, rd.PENCERE).abs() * 3 + 3
     # dynamo=False: eski TorchScript ihracatcisi. Yeni (torch.export tabanli)
     # ihracatci `onnxscript` istiyor ve sunucuda kurulu degil; eski yol bizim
@@ -324,13 +363,13 @@ def disa_aktar(sarmal, cikti, opset=17, dogrula=True):
         except ImportError:
             print("  onnxruntime yok -- calisma zamani dogrulamasi ATLANDI")
             print("  (pip install --user onnxruntime ile kurulabilir)")
-            return cikti
+            return cikti, None
         oturum = ort.InferenceSession(str(cikti),
                                       providers=["CPUExecutionProvider"])
         with torch.no_grad():
             t_logit, t_bos = sarmal(ornek)
         o_logit, o_bos = oturum.run(None, {"sinyal": ornek.numpy()})
-        d1 = np.abs(t_logit.numpy() - o_logit).max()
+        d1 = d_logit = float(np.abs(t_logit.numpy() - o_logit).max())
         d2 = np.abs(t_bos.numpy() - o_bos).max()
         print(f"  PyTorch vs ONNX  logit farki : {d1:.2e}")
         print(f"                   bosluk farki: {d2:.2e}")
@@ -362,7 +401,73 @@ def disa_aktar(sarmal, cikti, opset=17, dogrula=True):
                 print(f"    batch {b:>3}: HATA {type(e).__name__}: {str(e)[:90]}")
         assert not sorun, "dinamik batch calismiyor -- (None, 15000) verilemez"
         print(f"  [x] (None, {rd.PENCERE}) girdi sekli dogrulandi")
-    return cikti
+    return cikti, d_logit
+
+
+def opset_karsilastir(sarmal, opsetler=(13, 17), n=4, tohum=1):
+    """
+    Ayni grafigi farkli opset'lerle ihrac edip ciktilarini karsilastirir.
+
+    opset MATEMATIGI degistirmemeli -- yalnizca hangi operator tanimlarinin
+    kullanildigini. Ama "degistirmemeli" bir varsayim; bu fonksiyon onu
+    ORCUYE cevirir. Sorumlu 17 yerine 13 istedigi icin bedelini bilmemiz
+    gerekiyordu.
+
+    Donen: {opset: logit_dizisi} ve aradaki maks fark yazdirilir.
+    """
+    import tempfile
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("  onnxruntime yok -- opset karsilastirmasi ATLANDI")
+        return None
+
+    print("\n" + "=" * 70)
+    print(f"OPSET KARSILASTIRMASI -- {opsetler}")
+    print("=" * 70)
+    rng = np.random.default_rng(tohum)
+    x = (np.abs(rng.normal(0, 1, (n, rd.PENCERE))) * 3 + 3).astype(np.float32)
+
+    with torch.no_grad():
+        ref = sarmal(torch.from_numpy(x))[0].numpy()
+
+    sonuc = {}
+    with tempfile.TemporaryDirectory() as td:
+        for op in opsetler:
+            yol = str(Path(td) / f"op{op}.onnx")
+            ek = {}
+            try:
+                import inspect
+                if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+                    ek["dynamo"] = False
+            except (TypeError, ValueError):
+                pass
+            try:
+                torch.onnx.export(
+                    sarmal, (torch.from_numpy(x[:2]),), yol,
+                    input_names=["sinyal"],
+                    output_names=["logit", "bosluk_orani"],
+                    dynamic_axes={"sinyal": {0: "batch"},
+                                  "logit": {0: "batch"},
+                                  "bosluk_orani": {0: "batch"}},
+                    opset_version=op, do_constant_folding=True, **ek)
+            except Exception as e:  # noqa: BLE001
+                print(f"  opset {op:>3}: IHRAC EDILEMEDI -- "
+                      f"{type(e).__name__}: {str(e)[:80]}")
+                continue
+            o = ort.InferenceSession(yol, providers=["CPUExecutionProvider"])
+            sonuc[op] = o.run(None, {"sinyal": x})[0]
+            mb = Path(yol).stat().st_size / 1e6
+            print(f"  opset {op:>3}: ihrac OK  ({mb:.1f} MB)  "
+                  f"PyTorch'a fark {np.abs(sonuc[op] - ref).max():.2e}")
+
+    if len(sonuc) >= 2:
+        a, b = sorted(sonuc)[:2]
+        d = float(np.abs(sonuc[a] - sonuc[b]).max())
+        print(f"\n  opset {a} <-> {b} logit farki: {d:.2e}")
+        print(f"  {'[x] Ayni sonuc -- opset dusurmenin bedeli YOK' if d < 1e-5 else '  UYARI: ciktilar ayrisiyor, incelenmeli'}")
+        return d
+    return None
 
 
 def model_karti(onnx_yol, ckpt=None, sarmal=None, dogrulama=None):
@@ -496,7 +601,12 @@ if __name__ == "__main__":
     ap.add_argument("--sahte-agirlik", action="store_true",
                     help="agirliksiz, yalnizca hattı sina")
     ap.add_argument("--cikti", default=None)
-    ap.add_argument("--opset", type=int, default=17)
+    # opset 13: sorumlunun hedef calisma zamani 17'yi desteklemiyor.
+    # Bu grafik icin bedelsiz -- gerekcesi ve olcumu icin modul docstring'i
+    # ("OPSET NEDEN 13") ve --opset-karsilastir.
+    ap.add_argument("--opset", type=int, default=13)
+    ap.add_argument("--opset-karsilastir", action="store_true",
+                    help="13 ve 17 ile ihrac edip ciktilari karsilastir")
     ap.add_argument("--renk", default="viridis", choices=["viridis", "gri"])
     a = ap.parse_args()
 
@@ -505,13 +615,22 @@ if __name__ == "__main__":
 
     sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk)
     d_db = sayisal_dogrula(sarmal)
+    d_opset = opset_karsilastir(sarmal) if a.opset_karsilastir else None
     cikti = a.cikti or str(Path(a.ckpt).with_suffix(".onnx") if a.ckpt
                            else "bilstm_sahte.onnx")
-    disa_aktar(sarmal, cikti, opset=a.opset)
-    model_karti(cikti, ckpt=a.ckpt, sarmal=sarmal, dogrulama={
+    cikti, d_logit = disa_aktar(sarmal, cikti, opset=a.opset)
+
+    dogrulama = {
         "Spektrogram real_data ile ortusuyor": f"maks {d_db:.1e} dB fark",
-        "ONNX ciktisi PyTorch ile ortusuyor": "evet (ihracat ciktisina bak)",
+        # Olculen sayi karta yaziliyor -- eskiden "ihracat ciktisina bak"
+        # diyordu ve sayi konsolda kaliyordu.
+        "ONNX ciktisi PyTorch ile ortusuyor": (
+            f"maks {d_logit:.1e} logit farki" if d_logit is not None
+            else "OLCULMEDI (onnxruntime yok)"),
         "Dinamik batch 1/3/16/64": "calisiyor",
         "opset": a.opset,
-    })
+    }
+    if d_opset is not None:
+        dogrulama["opset 13 <-> 17 farki"] = f"{d_opset:.1e}"
+    model_karti(cikti, ckpt=a.ckpt, sarmal=sarmal, dogrulama=dogrulama)
     print("\nTAMAM.")

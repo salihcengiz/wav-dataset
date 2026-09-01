@@ -3,7 +3,7 @@
 > Bu dosya, projeye yeni katılan biri (veya yeni bir sohbet) için giriş
 > noktasıdır. Önce bunu oku, sonra aşağıdaki sıraya göre diğer dosyaları.
 
-**Son güncelleme:** 2026-08-28
+**Son güncelleme:** 2026-09-01
 
 ---
 
@@ -87,7 +87,7 @@ alındı" sorusunun cevabı.
 | `src/gercek_veri_kumesi.py` | PyTorch `Dataset` (uint8 döner) + `hazirla()` (GPU'da ölçekle/normalize) | aktif |
 | `src/gercek_egitim.py` | **Eğitim döngüsü.** `kos()` tek giriş noktası; `--olcum` darboğaz ölçümü | aktif |
 | `src/gercek_rapor.py` | Koşuları karşılaştırır, grafik + markdown üretir | aktif |
-| `src/gercek_export.py` | Teslim paketi + model kartı (⚠️ `DASNet` sabit, BiLSTM için ekleme gerek) | aktif |
+| `src/gercek_export.py` | Teslim paketi + model kartı. `MIMARILER` ile iki mimariyi de paketliyor (koşu 4 → BiLSTM). Kart, `.pt` (görüntü) ile `.onnx` (ham sinyal) ayrımını en üstte gösteriyor | aktif |
 | `src/model.py` | `DASNet` + SK/SE/CBAM + `load_pretrained()` | aktif |
 | `src/config.py` | Tüm hiperparametreler | aktif |
 | `src/sahte_onbellek.py` | **Yerel test için sahte veri üretir** (Bölüm 8A) | aktif |
@@ -312,13 +312,19 @@ cikti   logit        (batch, 3)      [cutting, climbing, noise]
 Dört ONNX engeli çözüldü (`fft_rfft`, `median`, adaptive pooling,
 antialias) — ayrıntı ve doğrulama sayıları sonuç belgesinde.
 
+**opset 13** (2026-09-01, sorumlunun isteği — hedef çalışma zamanı 17'yi
+desteklemiyor). Bedelsiz çıktı: 13 ile 17'nin logit farkı **0.00e+00**.
+Sebebi, grafiğin zaten opset 17'ye özgü hiçbir operatör kullanmaması —
+STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
+Ölçüm: `onnx_disa_aktar.py --opset-karsilastir`.
+
 ### ⏳ SIRADAKİ İŞLER
 
 | # | iş | not |
 |---|---|---|
-| 1 | **Teslim paketini koşu 4'e güncelle** | `gercek_export.py` `DASNet`'i sabit kuruyor; BiLSTM için ekleme gerekiyor. Paket hâlâ **koşu 3**'ünkü |
-| 2 | `gercek_rapor.py`'yi beş koşuyla çalıştır | Grafikler + markdown özeti; fark-farkı hesabını kendisi yapıyor |
-| 3 | ONNX kullanım kartını üret | Script hazır, bir kez daha çalıştırılmalı (kart eklendikten sonra koşulmadı) |
+| ~~1~~ | ✅ ~~Teslim paketini koşu 4'e güncelle~~ | **Kod hazır** (`MIMARILER`, iki mimari de yerelde test edildi). Sunucuda `python gercek_export.py --kosu 4` çalıştırılmalı |
+| ~~2~~ | ~~`gercek_rapor.py`'yi beş koşuyla çalıştır~~ | **Ertelendi** (2026-09-01) — böyle bir rapor şu an sorumludan beklenmiyor |
+| ~~3~~ | ✅ ~~ONNX kullanım kartını üret~~ | **Yapıldı.** `paket/bilstm_kosu4_KULLANIM.md`, performans tablosu dahil tam. İki küçük eksiği için sonuç belgesi Bölüm 10 |
 | 4 | **Koşu 6: geniş SK + yeni rejim** | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı — tek kalan belirsizlik |
 | 5 | Sorumluya özet | Beş koşu, en iyi model, ONNX teslimi |
 
@@ -364,6 +370,27 @@ Ekibin mevcut kodunda eğitim ve çıkarım dört noktada ayrışıyor (ölçek
 katsayısı, pencere boyutu, P/S, sessiz pencere filtresi). **Bizim hattımızda
 tek fonksiyon var** — `real_data.pencere_yukle`. İki kod yolu olmadığı için
 tutarsızlık imkânsız.
+
+### Sarmalanmış modelin dış arayüzünü iç modülünkiyle karıştırmak
+
+Sorumluya "model şu an `(None, 15000)` almıyor, `(None, 3, 224, 320)`
+alıyor — ama zinciri ONNX'e gömüyorum" diye yazıldı. İki şekil aynı
+cümlede geçti: biri **ihracattan önceki `nn.Module`'ün** girdisi, diğeri
+**ihraç edilen grafiğin** arayüzü. Sorumlu manşete cevap verdi ("ham
+sinyal vermen lazım, yeni model eğitmen gerekiyor") — oysa istediği şey
+zaten yapılmıştı.
+
+İki gün ve bir "yeni model eğitmek gerekir mi" yanlış çıkarımı buna gitti.
+
+→ `torch.onnx.export` `nn.Module` iç içeliğini **düzleştirir**; çıkan
+dosyada "sarmalayıcı" ile "asıl model" diye iki katman yoktur, tek bir
+düz grafik vardır. Dolayısıyla "ön işleme modelin içinde mi" sorusunun
+cevabı dosyaya bakılarak ölçülebilir bir olgudur.
+
+→ **Ders:** teslim edilen artefaktın arayüzünden bahsederken iç modülün
+şeklini hiç anma. `.pt` ile `.onnx` farklı girdiler alıyorsa bunu yan
+yana yaz. `gercek_export.py`'nin ürettiği model kartı artık tam da bunu
+yapıyor (en üstteki "Hangi dosyayı kullanmalısınız" tablosu).
 
 ### Şekil uyuyor diye anlam da uyuyor sanmak
 

@@ -32,13 +32,33 @@ Sentetik asamada bu paketi uretmistik (export_model.py + MODEL_CARD.md) ve
 gercek veriye gecerken tam da o dosya sayesinde nasil yukleyecegimizi
 bilebildik. Ayni disiplini burada da uyguluyoruz.
 
+=== IKI MIMARI ===
+
+Kosu 1-3 ve 5 DASNet (2D-CNN + SK), kosu 4 DASNetBiLSTM. Sinif secimi
+MIMARILER sozlugunden geliyor; yanlis secilirse load_state_dict(strict=True)
+patlar, yani sessizce yanlis paket uretilemez.
+
+BiLSTM mimarisi CNN-BiLSTM/model_bilstm.py'den IMPORT ediliyor,
+kopyalanmiyor -- "tek kod yolu" kurali.
+
+=== BU PAKET GORUNTU GIRDISI ALIR ===
+
+Buradaki .pt dosyasi (3, 224, 320) spektrogram GORUNTUSU bekler ve on
+islemesi DISARIDA yapilir. Ham sinyal (batch, 15000) ile calisan teslim
+CNN-BiLSTM/onnx_disa_aktar.py'nin urettigi .onnx dosyasidir.
+
+Bu ayrimin karta acikca yazilmasinin sebebi var: 2026-08 sonunda sorumluyla
+tam bu noktada bir yanlis anlasilma yasandi -- paketin girdi sekli
+(3,224,320) ile ONNX'in girdi sekli (None,15000) ayni sey sanildi. Kart
+artik ikisini yan yana gosteriyor.
+
 === KULLANIM ===
 
-    python gercek_export.py --kosu 3
-    python gercek_export.py --kosu 3 --dogrula     # uretilen paketi sina
+    python gercek_export.py --kosu 4
+    python gercek_export.py --dogrula <paket.pt>   # uretilen paketi sina
 
 Cikti:
-    egitim_ciktilari/paket/das_2dcnn_gercek_kosu3.pt
+    egitim_ciktilari/paket/das_cnn_bilstm_gercek_kosu4.pt
     egitim_ciktilari/paket/MODEL_CARD_gercek.md
 """
 import argparse
@@ -50,18 +70,109 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 _burada = str(Path(__file__).resolve().parent)
 if _burada not in sys.path:
     sys.path.insert(0, _burada)
 
+# CNN-BiLSTM/ tire icerdigi icin paket olarak import edilemez, yolu
+# ekliyoruz. Mimari oradan IMPORT ediliyor, kopyalanmiyor.
+_BILSTM_YOL = str(Path(__file__).resolve().parent.parent / "CNN-BiLSTM")
+if _BILSTM_YOL not in sys.path:
+    sys.path.insert(0, _BILSTM_YOL)
+
 import real_data as rd
 from gercek_veri_kumesi import GIRDI_H, GIRDI_W, NORM_MEAN, NORM_STD
 from model import DASNet, count_parameters
 
+try:
+    from model_bilstm import DASNetBiLSTM
+except ImportError:                     # CNN-BiLSTM/ checkout'ta yoksa
+    DASNetBiLSTM = None
+
 VERI = Path("/tf/start_training/RELATIONNET/FENCE_DATA_NEW")
 CIKTI = VERI / "egitim_ciktilari"
 TABAN = 0.771
+
+# Kosu -> mimari sinifi.
+#
+# gercek_egitim.KOSULAR bu bilgiyi TUTMUYOR: kosu 4'un modelini
+# CNN-BiLSTM/egitim_bilstm.py `model_fn` ile veriyor, KOSULAR yalnizca
+# renk/aktarim/cikti adini biliyor. O yuzden burada acikca yaziliyor.
+MIMARILER = {1: "DASNet", 2: "DASNet", 3: "DASNet",
+             4: "DASNetBiLSTM",
+             5: "DASNet"}
+
+KISA_AD = {"DASNet": "das_2dcnn_sk", "DASNetBiLSTM": "das_cnn_bilstm"}
+
+
+def model_kur(sinif, n_sinif, **kw):
+    """
+    Mimari adindan modeli kurar.
+
+    paketle() ve dogrula() AYNI fonksiyonu cagirir. Iki yerde ayri ayri
+    kurulsaydi zamanla ayrisirlardi -- bu projenin tekrar tekrar kacindigi
+    hata (bkz. real_data.py, "tek kod yolu").
+    """
+    if sinif == "DASNetBiLSTM":
+        if DASNetBiLSTM is None:
+            raise ImportError(
+                "DASNetBiLSTM import edilemedi -- CNN-BiLSTM/ dizini "
+                "checkout'ta mi? Sunucuda: "
+                "git sparse-checkout set src outputs/pretrained CNN-BiLSTM")
+        return DASNetBiLSTM(n_classes=n_sinif, **kw)
+    if sinif == "DASNet":
+        return DASNet(n_classes=n_sinif, **kw)
+    raise ValueError(f"bilinmeyen mimari: {sinif!r} "
+                     f"(secenekler: {sorted(set(MIMARILER.values()))})")
+
+
+def model_kur_mimariden(m):
+    """Paketin KENDI `mimari` tarifinden modeli kurar (dogrulama icin)."""
+    kw = dict(attention=m["dikkat"], channels=tuple(m["konv_kanallar"]),
+              dropout=m["dropout"], batchnorm=m["omurga_batchnorm"])
+    if m["sinif"] == "DASNetBiLSTM":
+        b = m["bilstm"]
+        kw.update(frekans_bin=b["frekans_bin"], gizli=b["gizli"],
+                  katman=b["katman"], zaman_havuzlama=b["zaman_havuzlama"])
+    return model_kur(m["sinif"], m["n_sinif"], **kw)
+
+
+def mimari_cikar(model, sinif, n_sinif, parametre):
+    """
+    Kurulmus modelden `mimari` sozlugunu OKUR.
+
+    Elle yazmak yerine canli nesneden okunuyor: paketteki sayilar boylece
+    modelin gercek halinden geliyor, "yazilmis ama guncellenmemis" olamaz.
+    """
+    konv = [k.out_channels for k in model.features
+            if isinstance(k, nn.Conv2d)]
+    m = {
+        "sinif": sinif,
+        "dikkat": model.attention_name,
+        "konv_kanallar": konv,
+        "omurga_batchnorm": any(isinstance(k, nn.BatchNorm2d)
+                                for k in model.features),
+        "dropout": float(model.dropout.p),
+        "n_sinif": n_sinif,
+        "parametre": parametre,
+    }
+    if model.attention_name == "sk":
+        m["sk"] = {"M": 2, "kernels": [3, 5], "r": 16, "L": 32, "gruplar": 32}
+    if sinif == "DASNetBiLSTM":
+        m["bilstm"] = {
+            "frekans_bin": model.frekans_bin,
+            "gizli": model.lstm.hidden_size,
+            "katman": model.lstm.num_layers,
+            "cift_yonlu": bool(model.lstm.bidirectional),
+            "zaman_havuzlama": bool(model.zaman_havuzlama),
+            "adim_boyutu": model.adim_boyutu,      # 64 kanal x 4 frekans bini
+            "dizi_boyutu": model.dizi_boyutu,      # 2 x gizli
+            "zaman_adimi": GIRDI_W // 8,           # omurga 3 kez 2'ye boluyor
+            "havuzlama": "dikkatli zaman havuzlama (son gizli durum DEGIL)",
+        }
+    return m
 
 
 def git_commit():
@@ -100,24 +211,38 @@ def paketle(kosu, cikti=CIKTI, hedef=None):
     siniflar = g["siniflar"]
     prec, rec, f1, destek = sinif_metrikleri(g["karisiklik"])
 
+    # --- MIMARIYI KUR VE AGIRLIKLARI YUKLE ---
+    #
+    # strict=True burada GERCEK bir dogrulama: MIMARILER'de yanlis sinif
+    # yazsaydik ya da mimari degismis olsaydi, yukleme patlardi. Yani
+    # sessizce yanlis paket uretmek mumkun degil.
+    sinif = MIMARILER.get(kosu)
+    if sinif is None:
+        raise ValueError(f"kosu {kosu} icin mimari tanimli degil "
+                         f"(MIMARILER: {sorted(MIMARILER)})")
+    model = model_kur(sinif, len(siniflar))
+    model.load_state_dict(ckpt["state_dict"], strict=True)
+    n_param = count_parameters(model)
+    if n_param != g["parametre"]:
+        raise ValueError(
+            f"parametre sayisi gecmis.json ile uyusmuyor: kurulan model "
+            f"{n_param:,}, egitimde {g['parametre']:,}. Mimari degismis "
+            f"olabilir -- paket uretilmedi.")
+    print(f"  mimari: {sinif}  ({n_param:,} parametre, strict=True yuklendi)")
+
     paket = {
-        "ad": f"das_2dcnn_sk_gercek_kosu{kosu}",
+        "ad": f"{KISA_AD[sinif]}_gercek_kosu{kosu}",
         "olusturma_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "git_commit": git_commit(),
 
         # --- MIMARI: modeli sifirdan kurmak icin yeterli ---
-        "mimari": {
-            "sinif": "DASNet",
-            "dikkat": "sk",
-            "konv_kanallar": [16, 32, 64],
-            "omurga_batchnorm": True,
-            "dropout": 0.5,
-            "sk": {"M": 2, "kernels": [3, 5], "r": 16, "L": 32, "gruplar": 32},
-            "n_sinif": len(siniflar),
-            "parametre": g["parametre"],
-        },
+        # Elle yazilmiyor, kurulan modelden okunuyor (mimari_cikar).
+        "mimari": mimari_cikar(model, sinif, len(siniflar), n_param),
 
         # --- GIRDI: bunlar olmadan model kullanilamaz ---
+        #
+        # DIKKAT: bu paket GORUNTU alir, ham sinyal DEGIL. Ham sinyalle
+        # calisan teslim .onnx dosyasidir (asagidaki "onnx" alani).
         "girdi": {
             "sekil": [3, GIRDI_H, GIRDI_W],
             "duzen": "dikey=frekans, yatay=zaman",
@@ -125,7 +250,18 @@ def paketle(kosu, cikti=CIKTI, hedef=None):
             "norm_mean": list(NORM_MEAN),
             "norm_std": list(NORM_STD),
             "olcekleme": "bilinear, antialias=True",
+            "ham_sinyal_almaz": True,
         },
+
+        # --- ONNX: ham sinyal alan asil teslim ---
+        "onnx": {
+            "uretici": "CNN-BiLSTM/onnx_disa_aktar.py",
+            "girdi": f"sinyal (batch, {rd.PENCERE}) float32 -- ham genlik",
+            "cikti": "logit (batch, n_sinif) + bosluk_orani (batch,)",
+            "on_isleme": "TAMAMI grafigin icinde",
+            "opset": 13,
+            "not": "Bu .pt goruntu alir; ham sinyal icin .onnx kullanilir.",
+        } if sinif == "DASNetBiLSTM" else None,
 
         # --- ON ISLEME: ham .bin.hdf5'ten girdiye giden TAM tarif ---
         "on_isleme": {
@@ -218,11 +354,40 @@ def paketle(kosu, cikti=CIKTI, hedef=None):
 
 def model_karti(p, hedef):
     perf, eg = p["performans"], p["egitim"]
-    s = [f"# DAS 2D-CNN + SK — Gerçek Saha Verisi Modeli", "",
+    mim = p["mimari"]
+    baslik = ("DAS CNN + BiLSTM" if mim["sinif"] == "DASNetBiLSTM"
+              else "DAS 2D-CNN + SK")
+    s = [f"# {baslik} — Gerçek Saha Verisi Modeli", "",
          f"**Dosya:** `{p['ad']}.pt`  ",
+         f"**Mimari:** `{mim['sinif']}` ({mim['parametre']:,} parametre)  ",
          f"**Üretim:** {p['olusturma_utc']}  ",
-         f"**Kod sürümü:** `{(p['git_commit'] or 'bilinmiyor')[:12]}`", "",
-         "## Performans", "",
+         f"**Kod sürümü:** `{(p['git_commit'] or 'bilinmiyor')[:12]}`", ""]
+
+    # --- EN ONEMLI UYARI, EN USTE ---
+    #
+    # Bu .pt GORUNTU alir. Sorumluyla 2026-08 sonunda tam bu noktada bir
+    # yanlis anlasilma yasandi: paketin (3,224,320) girdisi ile ONNX'in
+    # (None,15000) girdisi ayni sey sanildi. Ikisi yan yana yaziliyor.
+    if p.get("onnx"):
+        o = p["onnx"]
+        s += ["## ⚠️ Hangi dosyayı kullanmalısınız", "",
+              "Bu modelin **iki** teslim biçimi var ve girdileri **farklı**:", "",
+              "| | girdi | ön işleme | ne zaman |",
+              "|---|---|---|---|",
+              f"| **`.onnx`** (asıl teslim) | `(batch, {rd.PENCERE})` "
+              f"**ham sinyal** | **grafiğin içinde** | Çıkarım / entegrasyon |",
+              f"| `{p['ad']}.pt` (bu dosya) | `(3, {GIRDI_H}, {GIRDI_W})` "
+              f"spektrogram görüntüsü | **dışarıda**, elle | Eğitime devam, "
+              f"ince ayar, analiz |", "",
+              f"Ham sinyalden sınıf almak istiyorsanız **`.onnx` dosyasını "
+              f"kullanın** — `{o['uretici']}` üretiyor, opset {o['opset']}. "
+              f"O dosyada normalizasyon, STFT, renklendirme ve ölçekleme "
+              f"grafiğin içindedir; dışarıdan hiçbir ön işleme "
+              f"gerekmez.", "",
+              "Bu `.pt` dosyası ham sinyal **almaz**. Aşağıdaki 9 adımlık "
+              "tarif yalnızca bu dosya için geçerlidir.", ""]
+
+    s += ["## Performans", "",
          "| | |", "|---|---|",
          f"| **test macro-F1** | **{perf['test_macro_f1']:.4f}** |",
          f"| test doğruluk | {perf['test_dogruluk']:.4f} |",
@@ -273,19 +438,52 @@ def model_karti(p, hedef):
           f"⚠️ **Ölçek katsayısı ({oi['olcek_katsayisi']}).**", "",
           f"⚠️ **Sınıf sırası:** `{p['sinif_indeksi']}` — "
           f"karıştırılırsa model sessizce yanlış etiket üretir.", "",
-          "## Nasıl yüklenir", "",
-          "```python", "import torch", "from model import DASNet", "",
-          f"paket = torch.load('{p['ad']}.pt', map_location='cpu', "
-          f"weights_only=False)",
-          f"model = DASNet(attention='sk', n_classes={len(p['siniflar'])})",
-          "model.load_state_dict(paket['state_dict'])", "model.eval()", "",
-          "# on isleme: real_data.py + gercek_veri_kumesi.hazirla()",
-          "```", "", "## Sınırlar", ""]
+          "## Nasıl yüklenir", ""]
+
+    if mim["sinif"] == "DASNetBiLSTM":
+        b = mim["bilstm"]
+        s += ["```python", "import torch",
+              "from model_bilstm import DASNetBiLSTM   # CNN-BiLSTM/", "",
+              f"paket = torch.load('{p['ad']}.pt', map_location='cpu', "
+              f"weights_only=False)",
+              f"model = DASNetBiLSTM(attention='{mim['dikkat']}', "
+              f"n_classes={len(p['siniflar'])},",
+              f"                     frekans_bin={b['frekans_bin']}, "
+              f"gizli={b['gizli']}, katman={b['katman']})",
+              "model.load_state_dict(paket['state_dict'])", "model.eval()", "",
+              "# on isleme: real_data.py + gercek_veri_kumesi.hazirla()",
+              "# ham sinyalle calismak icin .onnx kullanin (yukari bakin)",
+              "```", "",
+              "### Zamansal baş", "",
+              "| | |", "|---|---|",
+              f"| zaman adımı | {b['zaman_adimi']} "
+              f"({7500/b['zaman_adimi']:.0f} ms/adım) |",
+              f"| adım boyutu | {b['adim_boyutu']} "
+              f"({mim['konv_kanallar'][-1]} kanal × {b['frekans_bin']} "
+              f"frekans bini) |",
+              f"| LSTM | gizli {b['gizli']}, {b['katman']} katman, "
+              f"{'çift yönlü' if b['cift_yonlu'] else 'tek yönlü'} "
+              f"→ {b['dizi_boyutu']} boyut |",
+              f"| havuzlama | {b['havuzlama']} |", ""]
+    else:
+        s += ["```python", "import torch", "from model import DASNet", "",
+              f"paket = torch.load('{p['ad']}.pt', map_location='cpu', "
+              f"weights_only=False)",
+              f"model = DASNet(attention='{mim['dikkat']}', "
+              f"n_classes={len(p['siniflar'])})",
+              "model.load_state_dict(paket['state_dict'])", "model.eval()", "",
+              "# on isleme: real_data.py + gercek_veri_kumesi.hazirla()",
+              "```", ""]
+
+    s += ["## Sınırlar", ""]
     s += [f"- {c}" for c in p["sinirlar"]]
+    alanlar = ["mimari", "girdi", "on_isleme", "siniflar", "sinif_indeksi",
+               "performans", "egitim", "sinirlar", "state_dict"]
+    if p.get("onnx"):
+        alanlar.insert(2, "onnx")
     s += ["", "## Paketin içindekiler", "",
-          "`mimari`, `girdi`, `on_isleme`, `siniflar`, `sinif_indeksi`, "
-          "`performans`, `egitim`, `sinirlar`, `state_dict`. Yani model "
-          "başka bir projede **bu dosyaya bakarak** yeniden kurulabilir.", ""]
+          ", ".join(f"`{a}`" for a in alanlar) + ". Yani model başka bir "
+          "projede **bu dosyaya bakarak** yeniden kurulabilir.", ""]
 
     yol = hedef / "MODEL_CARD_gercek.md"
     yol.write_text("\n".join(s), encoding="utf-8")
@@ -304,9 +502,9 @@ def dogrula(pt):
     print(f"  test macro-F1: {p['performans']['test_macro_f1']:.4f}")
 
     # 1) Paketin TARIFIYLE modeli kur -- disaridan bilgi kullanmadan
-    m = DASNet(attention=p["mimari"]["dikkat"],
-               n_classes=p["mimari"]["n_sinif"])
-    eksik, fazla = m.load_state_dict(p["state_dict"], strict=True), None
+    print(f"  mimari      : {p['mimari']['sinif']}")
+    m = model_kur_mimariden(p["mimari"])
+    m.load_state_dict(p["state_dict"], strict=True)
     print(f"  [x] state_dict tam olarak yuklendi (strict=True)")
     n = count_parameters(m)
     assert n == p["mimari"]["parametre"], \
@@ -340,7 +538,8 @@ def dogrula(pt):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Modeli teslim paketine cevir")
-    ap.add_argument("--kosu", type=int, default=3)
+    # Varsayilan kosu 4: en iyi model (CNN-BiLSTM, test macro-F1 0.9390).
+    ap.add_argument("--kosu", type=int, default=4, choices=sorted(MIMARILER))
     ap.add_argument("--cikti", default=str(CIKTI))
     ap.add_argument("--hedef", default=None)
     ap.add_argument("--dogrula", default=None,
