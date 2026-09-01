@@ -267,9 +267,16 @@ cikti   logit         (batch, 3)      float32   [cutting, climbing, noise]
 ### Doğrulama sonuçları (gerçek ağırlıklarla, sunucuda)
 
 ```
-PyTorch vs ONNX  logit farki : 3.10e-06
-dinamik batch 1/3/16/64      : hepsi OK, fark <= 3.7e-05
+PyTorch vs ONNX  logit farki : 3.70e-06        (opset 13, 2026-09-01)
+bosluk farki                 : 2.98e-07
+dinamik batch 1 / 3 / 16 / 64: 1.3e-05 / 1.8e-05 / 7.4e-05 / 1.3e-04
 ```
+
+⚠️ Dinamik batch farkları koşudan koşuya değişir: o döngü her çağrıda
+**yeni rastgele girdi** üretiyor (sabit tohum yok) ve batch büyüdükçe
+float32 birikim hatası büyüyor. Eşik `1e-3`, logitler ~1-10 mertebesinde,
+yani bağıl hata ~1e-5 — `argmax` ancak birebir eşitlikte değişir.
+Önceki kayıt (opset 17, ≤3.7e-05) farklı bir çekilişti, regresyon değil.
 
 LSTM için "dinamik batch hata verebilir" uyarısı geldi ama **ölçüldü,
 sorun yok** — dizi uzunluğu sabit (40 adım).
@@ -361,15 +368,17 @@ native `STFT`/`DFT` operatörleriydi ve STFT zaten elle yazılmıştı
 antialias kapalı. Grafikteki en yeni gereksinim `Resize-13`; `LSTM`
 opset 7'den, `Softmax-13` 13'ten mevcut.
 
-**Ölçüldü** (`--opset-karsilastir`, sahte ağırlıklarla yerelde):
+**Ölçüldü** (`--opset-karsilastir`) — iki ortamda da aynı sonuç:
 
 ```
-opset  13: ihrac OK  (2.1 MB)   PyTorch'a fark 4.10e-08
-opset  17: ihrac OK  (2.1 MB)   PyTorch'a fark 4.10e-08
-opset 13 <-> 17 logit farki   :  0.00e+00
+                          sahte agirlik (yerel)   GERCEK agirlik (sunucu)
+opset 13  PyTorch'a fark        4.10e-08                3.58e-06
+opset 17  PyTorch'a fark        4.10e-08                3.58e-06
+opset 13 <-> 17 logit farki     0.00e+00                0.00e+00
 ```
 
-Dosya boyutu aynı, dinamik batch 13'te de çalışıyor.
+Dosya boyutu iki opset'te de aynı (2.147.296 bayt), dinamik batch 13'te de
+çalışıyor. **Opset düşürmenin bedeli sıfır.**
 
 ⚠️ **`dynamo=False` zorunlu.** torch 2.9+ varsayılan olarak yeni
 (torch.export tabanlı) ihracatçıyı kullanıyor ve o `onnxscript` istiyor —
@@ -379,6 +388,22 @@ sunucuda kurulu değil. Eski TorchScript ihracatçısı grafiği sorunsuz
 
 Girdi/çıktı adları: `sinyal` → `logit`, `bosluk_orani`.
 Dinamik eksen: üçünde de `{0: "batch"}`.
+
+**IR version 7.** opset'ten ayrı ikinci bir uyumluluk eşiği; 7 muhafazakâr
+(ONNX 1.6 dönemi), opset 13'ü destekleyen her çalışma zamanı okur.
+⚠️ Bu, dosyanın **sunucuda** üretilmesinin yan faydası: sunucudaki
+`onnx 1.14.1` IR 7 yazıyor, yereldeki `onnx 1.22` daha yenisini yazardı.
+**ONNX teslimleri sunucuda üretilmeli.**
+
+Dosyadan doğrulama (teslimden önce koşulmalı):
+
+```python
+import onnx
+m = onnx.load("bilstm_kosu4.onnx")
+print([(o.domain or "ai.onnx", o.version) for o in m.opset_import])  # [('ai.onnx', 13)]
+print(m.ir_version)                                                  # 7
+print([i.name for i in m.graph.input])                               # ['sinyal']
+```
 
 ### Rapor script'i ne üretiyor
 
