@@ -295,6 +295,114 @@ checkpoint ve `gecmis.json`'dan geliyor.
 
 ---
 
+## 8c. ⚠️ SAHA TESTİ — macro-F1 YETMEDİ (2026-09-01)
+
+Sorumlu BiLSTM'i kendi hattına taktı ve **MLflow waterfall görselleriyle**
+inceledi. Hat doğru çalışıyor (ONNX tarafında sorun yok, ham sinyal
+uyumlu). Ama sonuç beklenenden kötü:
+
+> **Saldırı sınıfları ile `noise` olması gerekenden çok daha fazla
+> birbirine karışıyor. Özellikle KENAR KANALLARDA.**
+
+Bu, test setindeki `noise` F1 0.987 ile **çelişiyor gibi görünüyor**.
+Çelişki değil — iki farklı şeyi ölçüyorlar.
+
+### Neden bu, önceden yazdığımız sınırın tam olarak gerçekleşmesi
+
+Kendi model kartımız bunu **öngörmüştü**:
+
+> *"val/test bölmeleri kürasyonlu görünüyor (boş pencere oranı train'de
+> %23, val/test'te %0.1). Saha koşullarında zayıf kanallar daha sık
+> olacaktır."*
+
+Ve `real_data.bos_mu` docstring'i şunu diyor:
+
+> *"olay etiketli pencerelerin ~%25'i spektral olarak boş... Bunlar
+> muhtemelen olaydan uzak kanallar — labels tablosu kanal ARALIĞI veriyor,
+> aralık kenarındaki kanallarda sinyal zayıflamış olabilir."*
+
+**Kenar kanal = zayıf sinyal = val/test'ten ayıklanmış pencere tipi.**
+0.9390, bu pencerelerin bulunmadığı bir dağılımda ölçüldü. Saha o
+pencereleri de içeriyor.
+
+### Sınanacak hipotezler (hiçbiri henüz ölçülmedi)
+
+| # | hipotez | nasıl sınanır |
+|---|---|---|
+| **1** | **`bosluk_orani > 0.45` filtresi saha testinde uygulanmıyor.** Model bu pencereler için eğitilmedi; filtresiz çalıştırılırsa kenar kanallarda anlamsız ama kendinden emin tahmin üretir | MLflow hattında filtrenin uygulanıp uygulanmadığını sor. **İlk bakılacak yer bu** |
+| 2 | BiLSTM zayıf pencerelere SK'den **daha kırılgan**. Dikkatli zaman havuzlama tek bir sahte darbeye kilitlenebilir; `AdaptiveAvgPool2d(1)` onu ortalamaya karıştırıp söndürür | SK'yi de ONNX'e çevirip aynı waterfall'da karşılaştır — **sorumlunun istediği bu** |
+| 3 | Kenar kanallarda etiketin kendisi gürültülü (kanal aralığının kenarı olayı zar zor görüyor ama "olay" etiketli) | `bosluk_orani`'na göre kanal-içi konumla çapraz tablo |
+
+### Ders
+
+**Tek bir toplam skor (macro-F1) dağılım kaymasını göstermez.** 0.9390 ile
+0.8737 arasındaki 0.065'lik fark gerçek ama, *kürasyonlu bir test setinde*
+gerçek. Sorumlunun görsel incelemesi bizim sayımızın ölçmediği bir şeyi
+ölçtü.
+
+→ Bundan sonra model karşılaştırmalarına **kenar kanal / düşük sinyal
+dilimi** ayrı bir kesit olarak eklenmeli. Elimizde ölçüt de var:
+`bosluk_orani`. Test setini `bosluk_orani` yüzdelik dilimlerine bölüp
+her dilimde ayrı macro-F1 raporlamak, bu tartışmayı sayıya çevirir.
+
+---
+
+## 8d. 🔒 KURAL — SINIF SIRASI ALFABETİK (2026-09-01'den itibaren)
+
+**Bundan sonraki TÜM eğitimlerde sınıflar alfabetik sıraya konur.**
+
+```
+0 = climbing
+1 = cutting
+2 = noise
+```
+
+**Eski modeller hariç** — koşu 1-5 ve sentetik aşama, aşağıdaki eski
+sırayla eğitildi ve o hâlleriyle geçerli:
+
+```
+ESKI (kosu 1-5):  0 = cutting,  1 = climbing,  2 = noise
+```
+
+Eski sıra `onbellek_kur.SINIFLAR`'dan geliyordu ve o da ekibin
+`support_set_creator.py`'sindeki haritayı izliyordu (Rapor 6.4). Yani
+uydurma değildi — ama alfabetik olmadığı için her arayüzde ayrıca
+belirtilmesi gerekiyor ve bir kez sorulmasına yol açtı.
+
+**Neden alfabetik:** `sorted()`, `sklearn.LabelEncoder`,
+`torchvision.ImageFolder` ve pandas `astype("category")` hepsi alfabetik
+üretir. Alfabetik olmayan bir sıra, bu araçlardan herhangi biriyle
+karşılaşan her yerde sessiz bir takas riski taşır — ve takas edilecek
+ikili tam da birbirine en çok karışan `climbing`/`cutting` olur.
+
+⚠️ **Değiştirilecek yer:** `onbellek_kur.SINIFLAR`. Değiştirildiğinde
+**önbellek yeniden kurulmalı** (etiketler orada tam sayı olarak yazılı)
+ve tüm modeller yeniden eğitilmelidir. Bu yüzden kural *bundan sonraki*
+eğitimler için — mevcut önbellek ve modeller eski sırayla kalıyor.
+
+⚠️ Eski bir modelin ONNX'i alfabetik sıra isteyen bir hatta verilecekse,
+yeniden eğitim gerekmez: `classifier` katmanının satırları yeniden
+sıralanır (`weight[[1,0,2]]`, `bias[[1,0,2]]`). Ama bu **açıkça
+belgelenmeli**, yoksa iki farklı sıralı model dolaşıma girer.
+
+---
+
+## 8e. 🔒 KURAL — ONNX HER ZAMAN HAM SİNYAL ALIR
+
+Sorumlu BiLSTM teslimini onayladı ve şunu kural hâline getirdi:
+
+> **Bundan sonraki tüm modellerin ONNX dosyaları da ham sinyale uyumlu
+> olacak** — `(None, 15000)`, ön işlemenin tamamı grafiğin içinde.
+
+Yani `CNN-BiLSTM/onnx_disa_aktar.py`'deki `OnIslemeliModel` sarmalayıcısı
+artık isteğe bağlı bir kolaylık değil, **teslim standardı**. Yeni bir
+mimari eklendiğinde sarmalayıcı yeniden yazılmaz — `model_kur()` ile
+kurulup aynı sarmalayıcıya verilir.
+
+opset **13**, IR **7**, çıktılar `logit` + `bosluk_orani`.
+
+---
+
 ## 8b. TEKNİK REFERANS
 
 Koda bakmadan hatırlanması gereken sabitler.
@@ -433,6 +541,7 @@ olabilir" uyarısı basıyor.
 | `src/model.py` | `load_pretrained(..., atla=("classifier",))` |
 | `CNN-BiLSTM/model_bilstm.py` | Yeni mimari; ONNX için sabit çekirdekli havuzlama |
 | `CNN-BiLSTM/egitim_bilstm.py` | İnce koşturucu, kendi eğitim döngüsü yok |
+| `CNN-BiLSTM/onnx_disa_aktar.py` | **Artık mimariden bağımsız** — `ckpt_oku()` mimariyi (`lstm.` tensörü var mı) ve rengi (`ayar.renk`) checkpoint'ten okuyor; `sarmalayici_kur()` `model_kur()` ile kuruyor. Kart mimariyi ve rengi yazıyor. Ölçüldü: aynı dB'den gri vs viridis girdi farkı **3.852** — yanlış renk sessizce bozuk girdi demek, o yüzden sorulmuyor, okunuyor |
 | `CNN-BiLSTM/onnx_disa_aktar.py` | Sarmalayıcı + ihracat + doğrulama + kullanım kartı. **opset varsayılanı 13**; `opset_karsilastir()` ve `--opset-karsilastir` eklendi; `disa_aktar()` artık ölçülen logit farkını **döndürüyor** ve kart o sayıyı yazıyor (eskiden "ihracat çıktısına bak" diyordu) |
 | `src/gercek_export.py` | **İki mimariyi de paketliyor.** `MIMARILER` (koşu → sınıf), `model_kur()` / `model_kur_mimariden()` / `mimari_cikar()`. `mimari` bloğu elle yazılmıyor, kurulan modelden okunuyor. `--kosu` varsayılanı 4. Kart, `.pt` (görüntü) ile `.onnx` (ham sinyal) ayrımını **en üstte** gösteriyor |
 

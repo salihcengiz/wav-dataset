@@ -51,7 +51,19 @@ koşusu** tamamlandı.
 **Taban çizgisi: macro-F1 0.771** (doğrusal sınıflandırıcı, 26 özellik)
 **Ulaşılan: macro-F1 0.9390** (CNN-BiLSTM, koşu 4) — **+0.168**
 
-Kalan hata `climbing` ↔ `cutting` arasında; `noise` çözülmüş (F1 0.987).
+ONNX teslimi yapıldı ve **sorumlu tarafından onaylandı** (opset 13, ham
+sinyal, hat doğru çalışıyor).
+
+⚠️ **AMA saha testi kötü.** Sorumlu MLflow waterfall görselleriyle
+inceledi: saldırı sınıfları ile `noise` olması gerekenden **çok daha
+fazla** karışıyor, **özellikle kenar kanallarda** — oysa test setinde
+`noise` F1 0.987. Çelişki değil: 0.9390 kürasyonlu bir test setinde
+ölçüldü, saha zayıf kanalları da içeriyor. Kendi model kartımız bu sınırı
+zaten yazmıştı.
+
+**Sorumlunun isteği: SK modeli de ONNX'e çevrilip aynı waterfall'da
+karşılaştırılsın.** Hipotezler ve sınama yolu:
+`GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8c.
 
 Sıradaki işler Bölüm 5'in sonunda ve
 `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 10'da.
@@ -93,7 +105,7 @@ alındı" sorusunun cevabı.
 | `src/sahte_onbellek.py` | **Yerel test için sahte veri üretir** (Bölüm 8A) | aktif |
 | `CNN-BiLSTM/model_bilstm.py` | **Kazanan mimari** | aktif |
 | `CNN-BiLSTM/egitim_bilstm.py` | İnce koşturucu (`kos()` çağırır) | aktif |
-| `CNN-BiLSTM/onnx_disa_aktar.py` | ONNX ihracatı, ön işleme gömülü | aktif |
+| `CNN-BiLSTM/onnx_disa_aktar.py` | ONNX ihracatı, ön işleme gömülü. **Her mimari için** — mimari ve renk checkpoint'ten okunuyor | aktif |
 | `src/sunucu_kontrol.py` | Sunucu ortam + hız ölçümü | bir kerelik, bitti |
 | `src/inspect_csv_index.py` | Faz 0: CSV indeksini çöz | bir kerelik, bitti |
 | `src/inspect_hdf5.py` | Faz 0: HDF5 yapısını incele | bir kerelik, bitti |
@@ -145,6 +157,9 @@ Sentetikte Faz 1'i bunu sağlamak için yazmıştık; burada hazır geliyor.
 | Boş pencereler | elenir (~%27) |
 | Normalizasyon | pencere-içi (medyan/MAD) — **zorunlu** |
 | Ölçek katsayısı | uygulanmaz (normalizasyon sadeleştiriyor) |
+| Sınıf sırası (koşu 1-5) | `0=cutting, 1=climbing, 2=noise` — ekibin `support_set_creator.py` haritası |
+| Sınıf sırası (**bundan sonra**) | **alfabetik**: `0=climbing, 1=cutting, 2=noise` — bkz. Bölüm 9 |
+| ONNX teslimi | **her zaman** ham sinyal `(None, 15000)`, opset 13 — bkz. Bölüm 9 |
 
 Gerekçeler: `GERCEK_VERI_FAZ0_RAPORU.md` Bölüm 1.5
 
@@ -325,7 +340,10 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | ~~1~~ | ✅ ~~Teslim paketini koşu 4'e güncelle~~ | **Kod hazır** (`MIMARILER`, iki mimari de yerelde test edildi). Sunucuda `python gercek_export.py --kosu 4` çalıştırılmalı |
 | ~~2~~ | ~~`gercek_rapor.py`'yi beş koşuyla çalıştır~~ | **Ertelendi** (2026-09-01) — böyle bir rapor şu an sorumludan beklenmiyor |
 | ~~3~~ | ✅ ~~ONNX kullanım kartını üret~~ | **Yapıldı.** `paket/bilstm_kosu4_KULLANIM.md`, performans tablosu dahil tam. İki küçük eksiği için sonuç belgesi Bölüm 10 |
-| 4 | **Koşu 6: geniş SK + yeni rejim** | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı — tek kalan belirsizlik |
+| **A** | **Gri+SK (koşu 3) ONNX'e çevir** | Sorumlunun isteği. Ham sinyal `(None,15000)`, opset 13, `--renk gri`. Waterfall'da BiLSTM ile karşılaştırılacak |
+| **B** | **`bosluk_orani` filtresi saha hattında uygulanıyor mu — SOR** | Kenar kanal karışmasının en olası sebebi. Bölüm 8c hipotez 1 |
+| **C** | Test setini `bosluk_orani` dilimlerine böl, dilim başına macro-F1 | "Zayıf sinyalde ne oluyor" sorusunu sayıya çevirir |
+| 4 | Koşu 6: geniş SK + yeni rejim | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı |
 | 5 | Sorumluya özet | Beş koşu, en iyi model, ONNX teslimi |
 
 ---
@@ -688,6 +706,34 @@ gibi kalıcı sonucu olanlar).
 
 Daha genel kural: **kendi başına karar verilip yapılan bu tür işlerde önce
 sorulur.**
+
+### 🔒 Sınıf sırası ALFABETİK (2026-09-01'den itibaren)
+
+**Bundan sonraki tüm eğitimlerde sınıflar alfabetik sıraya konur:**
+
+```
+0 = climbing     1 = cutting     2 = noise
+```
+
+**Eski modeller hariç.** Koşu 1-5 ve sentetik aşama eski sırayla
+(`0=cutting, 1=climbing, 2=noise`) eğitildi, o hâlleriyle geçerli.
+
+Sebep: `sorted()`, `sklearn.LabelEncoder`, `ImageFolder`, pandas
+`category` — hepsi alfabetik üretir. Alfabetik olmayan sıra, bu
+araçlardan biriyle karşılaşan her yerde **sessiz takas** riski taşır ve
+takas edilecek ikili tam da en çok karışan `climbing`/`cutting`.
+
+Değiştirilecek yer `onbellek_kur.SINIFLAR`; değişince **önbellek yeniden
+kurulmalı** ve modeller yeniden eğitilmeli. Ayrıntı ve eski modeli
+dönüştürme yöntemi: `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8d.
+
+### 🔒 ONNX her zaman ham sinyal alır
+
+Sorumlunun kuralı: **bundan sonraki tüm modellerin ONNX dosyaları da**
+`(None, 15000)` ham sinyal alacak, ön işlemenin tamamı grafiğin içinde.
+Sarmalayıcı (`OnIslemeliModel`) artık teslim standardı; yeni mimari
+eklendiğinde yeniden yazılmaz, `model_kur()` ile kurulup aynı
+sarmalayıcıya verilir. opset 13, IR 7.
 
 ### Diğer kurallar
 

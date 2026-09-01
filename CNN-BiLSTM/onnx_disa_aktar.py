@@ -1,8 +1,20 @@
 """
-CNN + BiLSTM -- ONNX DISA AKTARIM
+ONNX DISA AKTARIM -- HER MIMARI ICIN (DASNetBiLSTM ve DASNet)
 
 Modeli, ON ISLEMENIN TAMAMI ICINE GOMULU halde tek bir .onnx dosyasina
-cevirir. Girdi HAM SINYAL:
+cevirir. Girdi HAM SINYAL.
+
+=== TESLIM STANDARDI (sorumlunun kurali, 2026-09-01) ===
+
+BUNDAN SONRAKI TUM MODELLERIN .onnx dosyalari ham sinyal alacak:
+(None, 15000), on isleme grafigin icinde, opset 13.
+
+Sarmalayici (OnIslemeliModel) mimariden BAGIMSIZ -- icine hangi model
+konursa onu sarar. Yeni bir mimari eklendiginde bu dosya degismez;
+gercek_export.model_kur() onu kurar, buraya verilir.
+
+Mimari ve renk CHECKPOINT'TEN OKUNUR (ckpt_oku), elle verilmez. Yanlis
+renk vermek modele sessizce yanlis girdi verir ve hicbir hata cikmaz.
 
     girdi  : (batch, 15000) float32   -- genlik, 7.5 s @ 2000 Hz
     cikti  : (batch, 3)     float32   -- logit  [cutting, climbing, noise]
@@ -114,6 +126,33 @@ import real_data as rd                                    # noqa: E402
 from gercek_veri_kumesi import (GIRDI_H, GIRDI_W, NORM_MEAN,  # noqa: E402
                                 NORM_STD, viridis_lut)
 from model_bilstm import DASNetBiLSTM                     # noqa: E402
+# Mimari kaydi TEK YERDE: gercek_export. Burada kopyalanmiyor.
+from gercek_export import model_kur                       # noqa: E402
+
+
+def ckpt_oku(ckpt):
+    """
+    Checkpoint'ten mimari, renk ve sinif sayisini OKUR -- tahmin etmez.
+
+    NEDEN OTOMATIK:
+    Yanlis --renk vermek modele sessizce YANLIS girdi verir ve hicbir hata
+    mesaji cikmaz (gri model viridis goruntu gorurse tahminler coper).
+    Ayni sekilde yanlis mimari secmek load_state_dict'te patlar ama once
+    zaman kaybettirir. Ikisi de checkpoint'in icinde zaten yaziyor:
+
+        mimari : state_dict'te "lstm." ile baslayan tensor var mi
+        renk   : paket["ayar"]["renk"]  (egitim dongusu yaziyor)
+        sinif  : classifier.weight'in satir sayisi
+
+    Donen: (paket, state_dict, mimari_adi, renk, n_sinif)
+    """
+    paket = torch.load(str(ckpt), map_location="cpu", weights_only=False)
+    sd = paket.get("state_dict", paket)
+    sinif = ("DASNetBiLSTM" if any(str(k).startswith("lstm.") for k in sd)
+             else "DASNet")
+    renk = (paket.get("ayar") or {}).get("renk")
+    n_sinif = int(sd["classifier.weight"].shape[0])
+    return paket, sd, sinif, renk, n_sinif
 
 
 class OnIslemeliModel(nn.Module):
@@ -248,13 +287,38 @@ class OnIslemeliModel(nn.Module):
 
 
 # ---------------------------------------------------------------
-def sarmalayici_kur(ckpt=None, renk="viridis", **model_kw):
-    net = DASNetBiLSTM(**model_kw)
+def sarmalayici_kur(ckpt=None, renk=None, mimari=None, n_sinif=3, **model_kw):
+    """
+    Ham sinyal alan sarmalanmis modeli kurar.
+
+    mimari / renk None ise checkpoint'ten OKUNUR (ckpt_oku). Elle vermek
+    otomatik tespiti ezer -- yalnizca checkpoint eksik bilgi tasiyorsa
+    gerekli.
+    """
+    sd = None
     if ckpt:
-        paket = torch.load(str(ckpt), map_location="cpu", weights_only=False)
-        sd = paket.get("state_dict", paket)
+        paket, sd, bulunan, ckpt_renk, n_sinif = ckpt_oku(ckpt)
+        if mimari and mimari != bulunan:
+            print(f"  UYARI: --mimari {mimari} verildi ama checkpoint "
+                  f"{bulunan} gibi duruyor")
+        mimari = mimari or bulunan
+        if renk and ckpt_renk and renk != ckpt_renk:
+            print(f"  UYARI: --renk {renk} verildi ama checkpoint "
+                  f"'{ckpt_renk}' diyor -- egitimdeki temsil bu!")
+        renk = renk or ckpt_renk
+
+    mimari = mimari or "DASNetBiLSTM"
+    if renk is None:
+        renk = "viridis"
+        if ckpt:
+            print("  UYARI: checkpoint renk bilgisi tasimiyor, "
+                  "'viridis' varsayildi")
+
+    net = model_kur(mimari, n_sinif, **model_kw)
+    if sd is not None:
         net.load_state_dict(sd)
         print(f"  agirliklar yuklendi: {ckpt}")
+        print(f"  mimari: {mimari}   renk: {renk}   sinif: {n_sinif}")
         if "val_macro_f1" in paket:
             print(f"  val macro-F1: {paket['val_macro_f1']:.4f}  "
                   f"(epoch {paket.get('en_iyi_epoch')})")
@@ -495,9 +559,19 @@ def model_karti(onnx_yol, ckpt=None, sarmal=None, dogrulama=None):
             p["n_test"] = g.get("n_test")
 
     siniflar = p.get("siniflar") or ["cutting", "climbing", "noise"]
+
+    # Mimari ve renk sarmalayicidan OKUNUYOR, elle yazilmiyor -- yanlis
+    # renk yazan bir kart, kullaniciyi yanlis on islemeye yonlendirir.
+    sinif_adi = type(sarmal.model).__name__ if sarmal else "?"
+    renk = sarmal.renk if sarmal else "?"
+    mimari_metni = {"DASNetBiLSTM": "2D-CNN + SK-Attention + BiLSTM",
+                    "DASNet": "2D-CNN + SK-Attention"}.get(sinif_adi, sinif_adi)
+
     s = [f"# `{onnx_yol.name}` — Kullanım Kartı", "",
          "DAS çit-ihlali sınıflandırıcısı. **Ön işlemenin tamamı grafiğin "
-         "içinde** — ham sinyali verin, sınıf alın.", ""]
+         "içinde** — ham sinyali verin, sınıf alın.", "",
+         f"**Mimari:** {mimari_metni} (`{sinif_adi}`)  ",
+         f"**Girdi temsili:** {renk}", ""]
 
     if p.get("test_macro_f1"):
         s += ["## Performans", "",
@@ -557,11 +631,14 @@ def model_karti(onnx_yol, ckpt=None, sarmal=None, dogrulama=None):
           f"  -> STFT: n_fft={rd.N_FFT}, hop={rd.HOP}, Hann",
           f"  -> dB: 20*log10(S/S.max()), -{rd.TOP_DB:.0f} dB'de kirp",
           "  -> uint8 kuantalama (egitimde de boyleydi)",
-          "  -> viridis renklendirme -> 3 kanal",
+          ("  -> viridis renklendirme -> 3 kanal" if renk == "viridis"
+           else "  -> gri: uint8 3 kanala kopyalanir"),
           f"  -> {GIRDI_H}x{GIRDI_W}'ye olcekle (bilinear)",
           "  -> /255 -> ImageNet normalizasyonu",
-          "  -> 2D-CNN + SK-Attention + BiLSTM + dikkatli havuzlama",
-          "  -> 3 logit", "```", "",
+          ("  -> 2D-CNN + SK-Attention + BiLSTM + dikkatli zaman havuzlama"
+           if sinif_adi == "DASNetBiLSTM"
+           else "  -> 2D-CNN + SK-Attention + global ortalama havuzlama"),
+          f"  -> {len(siniflar)} logit", "```", "",
           "## Doğrulama", ""]
 
     if dogrulama:
@@ -607,13 +684,19 @@ if __name__ == "__main__":
     ap.add_argument("--opset", type=int, default=13)
     ap.add_argument("--opset-karsilastir", action="store_true",
                     help="13 ve 17 ile ihrac edip ciktilari karsilastir")
-    ap.add_argument("--renk", default="viridis", choices=["viridis", "gri"])
+    # renk ve mimari VARSAYILAN OLARAK checkpoint'ten okunur (ckpt_oku).
+    # Elle vermek tespiti ezer -- yanlis renk sessizce bozuk girdi demek.
+    ap.add_argument("--renk", default=None, choices=["viridis", "gri"],
+                    help="varsayilan: checkpoint'ten okunur")
+    ap.add_argument("--mimari", default=None,
+                    choices=["DASNetBiLSTM", "DASNet"],
+                    help="varsayilan: checkpoint'ten tespit edilir")
     a = ap.parse_args()
 
     if not a.ckpt and not a.sahte_agirlik:
         ap.error("--ckpt ver ya da --sahte-agirlik kullan")
 
-    sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk)
+    sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk, mimari=a.mimari)
     d_db = sayisal_dogrula(sarmal)
     d_opset = opset_karsilastir(sarmal) if a.opset_karsilastir else None
     cikti = a.cikti or str(Path(a.ckpt).with_suffix(".onnx") if a.ckpt
