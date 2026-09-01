@@ -651,6 +651,44 @@ Sparse-checkout ayarlı:
 git sparse-checkout set src outputs/pretrained CNN-BiLSTM
 ```
 
+### D) MLflow — model teslimi ve saha testi
+
+Ekibin MLflow sunucusu: **http://192.168.100.9:5000**, deney
+**`Salih-Perimeter-Inosens`** (id 89). Waterfall görsel testleri burada
+yapılıyor. Sunucudan (JupyterLab) erişiliyor, yerelden değil.
+
+**Yükleme deseni** — sorumlunun `mflow.ipynb`'si
+(`/tf/start_training/RELATIONNET/`) ne yapıyorsa aynısı:
+
+```python
+import mlflow
+mlflow.set_tracking_uri("http://192.168.100.9:5000")
+mlflow.set_experiment("Salih-Perimeter-Inosens")     # ADIYLA, id ile degil
+
+with mlflow.start_run(run_name="2026-09-01-MODEL-SK_GRI_PERİMETER"):
+    mlflow.log_artifact(onnx_yolu, "Onnx Model")     # KLASOR ADI BU
+```
+
+⚠️ **`mlflow.onnx.log_model` KULLANILMIYOR.** O, `MLmodel` + `model/`
+diye başka bir yapı üretir; ekibin hattı artefaktı `Onnx Model/*.onnx`
+yolundan okuyor. Deseni bozma.
+
+⚠️ Arayüzde dosya yükleme alanı **yok** — artefakt yalnızca API ile girer.
+
+Run adı geleneği: `YYYY-MM-DD-MODEL-<MIMARI>_PERİMETER`.
+
+**Yüklenenler:**
+
+| run | dosya | test macro-F1 |
+|---|---|---|
+| `2026-08-31-MODEL-BİLSTM_PERİMETER` | `bilstm_kosu4.onnx` | 0.9390 |
+| `2026-09-01-MODEL-SK_GRI_PERİMETER` | `sk_gri_kosu3.onnx` | 0.8737 |
+
+⚠️ Bu run'larda **parametre/metrik loglanmıyor** (sorumlunun deseni öyle).
+Yani MLflow'da opset, sınıf sırası ve `bosluk_orani` eşiği yazmıyor.
+`log_params` eklemek artefakt yolunu bozmaz ve karşılaştırmayı okunur
+kılar — önerilir.
+
 ### Uzun koşuları arka planda başlatma
 
 ⚠️ IPython'un `!` operatörü **arka plan süreçlerini desteklemiyor**
