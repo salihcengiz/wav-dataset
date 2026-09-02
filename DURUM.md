@@ -127,6 +127,8 @@ alındı" sorusunun cevabı.
 | `CNN-BiLSTM/model_bilstm.py` | **Kazanan mimari** | aktif |
 | `CNN-BiLSTM/egitim_bilstm.py` | İnce koşturucu (`kos()` çağırır) | aktif |
 | `CNN-BiLSTM/onnx_disa_aktar.py` | ONNX ihracatı, ön işleme gömülü. **Her mimari için** — mimari ve renk checkpoint'ten okunuyor | aktif |
+| `src/ortam_kontrol.py` | **Ortam sağlık kontrolü.** Paket sürümleri, `/dev/shm`, CUDA, `torch.from_numpy`. Her `pip install`ten sonra koştur | aktif |
+| `src/bos_pencere_testi.py` | Boş pencerelerde model ne diyor — boşluk/olay ayrımını ölçer | aktif |
 | `src/sunucu_kontrol.py` | Sunucu ortam + hız ölçümü | bir kerelik, bitti |
 | `src/inspect_csv_index.py` | Faz 0: CSV indeksini çöz | bir kerelik, bitti |
 | `src/inspect_hdf5.py` | Faz 0: HDF5 yapısını incele | bir kerelik, bitti |
@@ -487,6 +489,33 @@ kurmadık. **Paylaşılan `/usr/local`'a başkaları da yazıyor.**
 → Ortam bozuk şüphesinde ilk test: `sys.executable` ile **taze bir
 süreçte** `torch.from_numpy(np.zeros(3))`. Tanı bir dakika sürer.
 
+### `pip install` paylaşılan ortamı bozabilir — kurulumdan sonra kontrol et
+
+2026-09-02'de `mlflow-skinny` kurulunca `protobuf` 4.24.3 → 6.33.6
+yükseldi ve **TensorFlow 2.14 import edilemez oldu.** Bu sunucuda
+başkaları TF kullanıyor.
+
+Sürüm sabitlemek yetmiyor — bağımlılıklar da yükseltiliyor. Kurulumdan
+sonra **her zaman** şunu koştur:
+
+```
+python3 src/ortam_kontrol.py
+```
+
+Paketleri import edip sürümlerini sunucu beklentisiyle karşılaştırır,
+ayrıca `/dev/shm` boyutunu, CUDA'yı ve `torch.from_numpy` testini yapar
+(2026-08-27 numpy hatasının birebir tanısı). Sapma varsa çıkış kodu 1.
+
+Bozulursa geri al: `pip install --user "protobuf==4.24.3"`
+
+⚠️ Jupyter'de `!python3 -c "cok satirli kod"` **tırnakları bozuyor**
+(`SyntaxError: unterminated string literal`). Uzun kod için `%%writefile`
+ile dosyaya yaz, `!python3 dosya.py` ile koştur.
+
+⚠️ `pip install` sonrası **kernel yeni paketleri görmez** — Restart
+Kernel gerekir. `!python3` altsüreç olduğu için hemen görür; bu yüzden
+"script çalışıyor ama hücre çalışmıyor" durumu çıkıyor.
+
 ### GPU paylaşımlı — dört kez engelledi
 
 - %85 doluluk → epoch süresi 1.5 katına çıktı
@@ -524,10 +553,27 @@ yayılımı varsayılan olarak deterministik değil). `train.py` içinde
 0. ✅ **PyTorch kurulumu — YAPILDI** (2026-08-26, `--user`). GPU koordinasyonu
    soruldu, **"yapacak bir şey yok"** yanıtı geldi; bekleyen başlatıcıyla
    çalışıyoruz.
-0b. ⚠️ **Ortam bakımsız — bildirilmeli.** `protobuf 6.33.6` kurulu ama
-   TensorFlow 2.14 `<5.0` istiyor (biz kurmadık). numpy bir kez bozuldu.
-   `/dev/shm` 64 MB, DataLoader'ı çökertiyor — `--shm-size=2g` gerekiyor.
-   Kalıcı çözüm: herkesin kendi `venv`'inde çalışması.
+0b. ⚠️ **Ortam bakımsız.** `/dev/shm` 64 MB, DataLoader'ı çökertiyor —
+   `--shm-size=2g` gerekiyor. Kalıcı çözüm: herkesin kendi `venv`'inde
+   çalışması. **Sorumluya iletildi mi: henüz hayır.**
+
+   ✅ **`protobuf 6.33.6` gizemi çözüldü (2026-09-02): `mlflow` kuruyor.**
+   `mlflow-skinny` bağımlılık olarak en yeni protobuf'u çekiyor;
+   TensorFlow 2.14 ise `<5.0` istiyor ve **import edilemez hâle geliyor.**
+   Daha önce "biz kurmadık" diye not düşülen 6.33.6 de bundan geliyormuş.
+
+   → Düzeltme: `pip install --user "protobuf==4.24.3"`. `mlflow-skinny`
+   `protobuf<8,>=3.12.0` istediği için 4.24.3'le de **çalışıyor** (pip
+   uyarı basar, `databricks-sdk`/`opentelemetry-proto` 5+ beyan eder ama
+   import ve `log_artifact` sorunsuz). Çözücü sadece en yenisini seçiyor.
+
+   ⚠️ **mlflow kurduktan sonra HER ZAMAN protobuf'u kontrol et** —
+   yoksa paylaşılan sunucuda başkalarının TensorFlow'unu bozarsın.
+
+   ⚠️ **2026-09-02: `--user` ile kurulan paketlerin HEPSİ silinmişti**
+   (`torch`, `torchvision`, `onnx`, `onnxruntime`, `mlflow`). Birkaç gün
+   önce numpy bozulmuştu. Uzun bir koşunun ortasında olsa kaybedilirdi.
+   Ortam kontrolü: **`python3 src/ortam_kontrol.py`**
 0c. ⚠️ **`bosluk_orani` filtresi.** ONNX modeli bu değeri çıktı veriyor ve
    `> 0.45` olan pencerelerin tahmini kullanılmamalı. Sorumluya iletilmeli.
 1. `.sdf.hdf5` dosyalarında `duration` ile örnek sayısı 2 kat uyuşmuyor
