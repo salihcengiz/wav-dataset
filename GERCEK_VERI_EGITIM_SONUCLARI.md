@@ -281,12 +281,68 @@ yani bağıl hata ~1e-5 — `argmax` ancak birebir eşitlikte değişir.
 LSTM için "dinamik batch hata verebilir" uyarısı geldi ama **ölçüldü,
 sorun yok** — dizi uzunluğu sabit (40 adım).
 
+### ✅ BOŞ PENCERE BASTIRMASI GRAFİĞE GÖMÜLDÜ (2026-09-01)
+
+Ölçüm (Bölüm 8c) şunu gösterdi: **gri model bile** boş pencerelerde
+`argmax`'ı %99.8 oranında bir saldırı sınıfına veriyor — sadece düşük
+güvenle. Eşik uygulanırsa kurtuluyor, uygulanmazsa kurtulmuyor. Ve bir
+sınıflandırıcıyı kullanmanın varsayılan yolu `argmax`.
+
+Kök sebep: `noise` **etiketlenmiş bir olay türü**, "boşluk" değil. Boş
+pencereler eğitimden silindi, `noise` diye etiketlenmedi — modelin susma
+cevabı yok.
+
+**Çözüm, yeniden eğitim olmadan:** grafik `bosluk_orani`'nı zaten
+hesaplıyor. Eşiği aşıyorsa saldırı sınıflarının logitinden büyük bir
+sabit düşülüyor, `argmax` kendiliğinden `noise`'a düşüyor.
+
+```
+gecerli = (bosluk_orani <= 0.45)             -> 1.0 / 0.0
+logit   = logit - (1 - gecerli) * maske * 1e4
+                              maske = [1, 1, 0]   (noise dokunulmaz)
+```
+
+Koşullu dal **yok** — ONNX'te `if` olmadığı için saf aritmetik:
+`LessOrEqual → Cast → Mul → Sub`. Hepsi opset 13'te mevcut.
+
+**Çıktı şekli değişmedi** (`batch, 3`), yani çağıran tarafta hiçbir
+değişiklik gerekmiyor. Dosyayı değiştirip göndermek yeterli.
+
+**Ölçülen davranış:**
+
+| girdi | `bosluk_orani` | tahmin | logit |
+|---|---|---|---|
+| düz gürültü | 0.50 | **`noise`** | `[-1e4, -1e4, 0.05]` |
+| yapılı sinyal | 0.12 | normal | dokunulmadı |
+
+⚠️ **İki doğrulama eklendi** — ikisi de başarısız olabilir:
+- `bastirma_dogrula()` — PyTorch tarafında her iki yönü de sınıyor
+  (boşta bastırılıyor mu, doluda dokunulmuyor mu)
+- `disa_aktar()` içinde **ONNX'e ayrıca boş pencere veriliyor.** İhracat
+  örneği yapılı bir sinyal olduğu için bastırma dalı izleme sırasında
+  tetiklenmiyor; `do_constant_folding` geçerlilik bayrağını sabitleseydi
+  ONNX asla bastırmaz ve PyTorch tarafı doğru göründüğü için fark
+  edilmezdi. Ölçüldü: **sabitlenmemiş**, ONNX de bastırıyor.
+
+⚠️ Test sinyalleri de değişti (`ornek_sinyal`): eskiden düz gürültüydü,
+`bosluk_orani ≈ 0.5` çıkıyor ve bastırma tetikleniyordu — doğrulama
+`-1e4` ile `-1e4`'ü karşılaştırıp **asla başarısız olamayacak** hâle
+gelirdi. Artık yapılı sinyal kullanılıyor (`bosluk ≈ 0.12`).
+
+⚠️ **Bedeli:** `noise` artık iki şeyi temsil ediyor — etiketlenmiş
+gürültü olayı **ve** boş pencere. Ayırmak isteyen `bosluk_orani`'na
+bakabilir, değer hâlâ ikinci çıktı olarak veriliyor.
+
+`--bastirma-kapat` ile eski davranışa dönülebilir.
+
 ### ⚠️ Kullanım şartları
 
 - **Başka ön işleme uygulanmamalı** — hepsi içeride
 - **`/16384` ölçek katsayısı uygulanmamalı**
-- **`bosluk_orani > 0.45` olan pencerelerin tahmini kullanılmamalı** —
-  eğitimde bu pencereler elendi, model onlar için eğitilmedi
+- ~~`bosluk_orani > 0.45` olan pencerelerin tahmini kullanılmamalı~~ —
+  **artık grafiğin içinde hallediliyor** (yukarıya bak). `argmax`
+  doğrudan kullanılabilir; boş pencerelerde zaten `noise` döner.
+  `bosluk_orani` çıktısı bilgi amaçlı duruyor
 
 Çıktı: `egitim_ciktilari/paket/bilstm_kosu4.onnx` (2.1 MB) +
 `bilstm_kosu4_KULLANIM.md` — ✅ **ikisi de üretildi** (2026-09-01 doğrulandı).
@@ -394,58 +450,69 @@ Eğitim CSV'sinden **5.000 pencere** örneklendi, `bos_ele=False` ile
 yüklendi ve `bosluk_orani > 0.45` olanlar ayrıldı. Boş oranı **%22.0** —
 önbellek kurulumundaki %23 ile örtüşüyor (bağımsız doğrulama).
 
-**Boş pencerelerde (model bunlar için EĞİTİLMEDİ):**
+**Dört koşu, boş pencerelerde (model bunlar için EĞİTİLMEDİ):**
 
-| model | tahmin dağılımı | en büyük logit | **logit>0.9 saldırı** |
-|---|---|---|---|
-| **koşu 3 · SK · gri** | cutting %26, climbing %74 | ort **+0.258**, maks **+0.858** | **%0.0** |
-| **koşu 4 · BiLSTM · viridis** | climbing **%99.7** | ort **+1.552**, maks +1.771 | **%99.7** |
+| koşu | mimari | **renk** | boş maks logit | dolu/boş ayrım | **logit>0.9 saldırı** |
+|---|---|---|---|---|---|
+| 1 | SK | **viridis** | **+1.943** | **0.80×** | **%99.7** |
+| 4 | BiLSTM | **viridis** | +1.771 | 1.14× | **%99.7** |
+| 3 | SK | **gri** | **+0.858** | **5.18×** | **%0.0** |
+| 5 | SK | **gri** | +1.168 | 4.47× | %0.1 |
 
-**Dolu pencerelerle ayrım:**
+### 🔑 SEBEP MİMARİ DEĞİL, RENK TEMSİLİ
 
-| model | boş | dolu | ayrım |
-|---|---|---|---|
-| SK | +0.258 | +1.334 | **5.2×** |
-| BiLSTM | +1.552 | +1.763 | **1.14×** |
+İki **viridis** modeli de başarısız, iki **gri** modeli de başarılı.
+Mimari (SK ↔ BiLSTM) bu davranışla **ilgisiz**. Rejim de ilgisiz
+(koşu 5, farklı rejim, gri ile aynı davranıyor).
 
-**SK boş pencerede susuyor.** Logitleri sıfıra çöküyor; **maksimumu bile
-0.858**, yani 0.9 eşiğini hiç aşamıyor. Eşik tam da boşlukla doluluk
-arasındaki aralığa düşüyor — sorumlunun "iyi test 0.9 ile olur" demesi
-SK için birebir doğru.
+Koşu 1 hepsinden kötü: ayrımı **0.80×**, yani boş pencerede dolu
+pencereden **daha emin**. `>1.5` eşiğinde bile %99.6.
 
-**BiLSTM boş pencerede susmuyor.** Boş penceredeki güveni (+1.552),
-SK'nin *gerçek olaydaki* güveninden (+1.334) **yüksek**. Ve %99.7'sinde
-aynı şeyi diyor: `climbing`. Bu tahmin değil, dejenere bir refleks.
+⚠️ **İlk teşhis yanlıştı.** Koşu 3 ↔ koşu 4 karşılaştırmasına bakıp
+"BiLSTM'in dikkatli zaman havuzlaması boş pencerede bir adıma ağırlık
+vermek zorunda" denmişti. Koşu 1 bunu çürüttü: aynı havuzlamayı
+kullanmayan SK, viridis ile aynı — hatta daha kötü — davranıyor.
+Karıştırıcı değişkeni ayırmadan mekanizma uydurmanın bedeli.
 
-**Hiçbir eşik BiLSTM'i kurtarmıyor:** `>1.5`'te bile boş pencerelerin
-%79.8'ine saldırı diyor. SK ise `>0.5`'te zaten %4.5'e iniyor.
+**Desen:** dört model de boş pencerede `climbing` diyor (%74–99.7).
+Fark **güvende**: gri'de logit sıfıra çöküyor (+0.26), viridis'te gerçek
+olay seviyesinde kalıyor (+1.6 ~ +1.8).
+
+**Mekanizma hipotezi (ölçülmedi):** boş pencere, normalizasyon sonrası
+neredeyse düz bir dB alanı veriyor. Gri'de düz alan → üç kanalda aynı
+sabit → konvolüsyon yığını sönümlü tepki veriyor. Viridis'te düz bir dB
+değeri **belirgin ve renkli bir sabite** eşleniyor; ilk katman
+(Conv 3→16) bunu güçlü ve tutarlı bir örüntü olarak görüyor.
 
 ### Bu neyi açıklıyor
 
-1. **Sorumlunun saha gözlemini.** Kenar kanallar = zayıf/boş pencereler =
-   BiLSTM'in ayırt edemediği yer. "Saldırı sınıfları ile `noise` çok
-   karışıyor, özellikle kenar kanallarda" — ölçülen davranış bu.
+1. **Sorumlunun saha gözlemini.** Kenar kanallar = zayıf/boş pencereler.
+   Sahada kullanılan model koşu 4 = **viridis** = ayırt edemeyen taraf.
 2. **macro-F1'in neden yanılttığını.** 0.9390, boş pencerelerin
    **elendiği** bir test setinde ölçüldü. Saha onları da içeriyor.
-   BiLSTM'in +0.065'lik üstünlüğü sahada tersine dönüyor.
-3. **Mimari mekanizmayı.** Dikkatli zaman havuzlama, boş bir pencerede de
-   bir zaman adımına ağırlık vermek zorunda — softmax toplamı 1. Global
-   ortalama havuzlama (SK) gürültüyü ortalamaya karıştırıp söndürüyor.
+3. **Teslim ettiğimiz iki modelin neden farklı davranacağını.**
+   `sk_gri_kosu3.onnx` **gri** → sağlam. `bilstm_kosu4.onnx` **viridis**
+   → sorunlu.
 
-⚠️ **Karıştırıcı değişken:** koşu 3 **gri**, koşu 4 **viridis**. Bu
-karşılaştırma mimariyi ve renk temsilini birlikte değiştiriyor.
-**Koşu 1 (viridis + SK)** ikisini ayırır ve script'e eklendi:
-koşu 1 de susuyorsa fark mimariden, bağırıyorsa viridis'ten.
+### 🔒 KARAR — VİRİDİS BIRAKILIYOR
 
-### Karar
+Viridis'in tek gerekçesi, sentetik önceden-eğitilmiş modelle **temsil
+paritesiydi** (`gercek_veri_kumesi.py`, "NEDEN VIRIDIS"). Koşu 2
+aktarımın işe yaramadığını gösterdi ve *"sentetik model artık
+kullanılmıyor"* kararı alındı — **yani gerekçe zaten düşmüştü.**
+Kazancı +0.011 macro-F1'di; bedeli şimdi ölçüldü ve çok ağır.
 
-- **`bosluk_orani > 0.45` filtresi saha hattında ZORUNLU.** İlkeli çözüm,
-  iki mimari için de çalışır. ONNX değeri ikinci çıktı olarak veriyor.
-- **Filtre yoksa BiLSTM sahada kullanılamaz.** SK + eşik 0.9 kombinasyonu
-  filtresiz bile makul davranıyor — sorumlunun SK'yi de test etme isteği
-  bu yüzden yerindeydi.
-- **Model seçimi yalnızca macro-F1 ile yapılamaz.** Bundan sonraki
-  karşılaştırmalara "boş pencerede ayrım" ölçütü eklenmeli.
+**Bundan sonraki tüm eğitimler `renk="gri"`.**
+
+### Kalan karar
+
+- **`bosluk_orani > 0.45` filtresi saha hattında yine de ZORUNLU.**
+  Gri modeller sağlam ama filtre ilkeli çözüm ve her modelde çalışır.
+- **Model seçimi yalnızca macro-F1 ile yapılamaz.** Karşılaştırmalara
+  "boş pencerede ayrım" ölçütü eklenmeli (`src/bos_pencere_testi.py`).
+- **Koşu 7 değerli hâle geldi: BiLSTM + gri.** Hiç denenmedi. BiLSTM'in
+  +0.065 kazancı mimariden geliyorsa, gri BiLSTM hem yüksek doğruluk hem
+  boşluk sağlamlığı verebilir.
 
 ### Ders
 

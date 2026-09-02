@@ -164,15 +164,45 @@ class OnIslemeliModel(nn.Module):
     icine gomulurler ve disaridan hicbir sey gerekmez.
     """
 
+    BASTIRMA = 1.0e4          # bos pencerede saldiri logitlerinden dusulen
+
     def __init__(self, model, pencere=rd.PENCERE, fs=rd.FS, n_fft=rd.N_FFT,
                  hop=rd.HOP, top_db=rd.TOP_DB, bos_frekans=rd.BOS_FREKANS,
-                 girdi=(GIRDI_H, GIRDI_W), renk="viridis"):
+                 girdi=(GIRDI_H, GIRDI_W), renk="viridis",
+                 siniflar=("cutting", "climbing", "noise"),
+                 bos_bastir=True, bos_esik=rd.BOS_ESIK):
         super().__init__()
         self.model = model
         self.pencere, self.fs = pencere, fs
         self.n_fft, self.hop, self.top_db = n_fft, hop, top_db
         self.girdi, self.renk = tuple(girdi), renk
         self.n_cerceve = 1 + (pencere - n_fft) // hop
+        self.siniflar = list(siniflar)
+        self.bos_bastir, self.bos_esik = bool(bos_bastir), float(bos_esik)
+
+        # --- BOS PENCERE BASTIRMASI ---
+        #
+        # OLCULDU (src/bos_pencere_testi.py): bos pencerelerde modelin
+        # argmax'i %99.8 oranda bir SALDIRI sinifi. `noise` bizim veri
+        # setimizde etiketlenmis bir OLAY TURU, "hicbir sey yok" degil --
+        # bos pencereler egitimden silindigi icin modelin susma cevabi yok.
+        #
+        # Cozum: bosluk_orani esigi asiyorsa saldiri siniflarinin
+        # logitinden buyuk bir sabit dusuyoruz; argmax kendiliginden
+        # `noise`'a dusuyor. Cikti SEKLI degismiyor, cagiran tarafta
+        # hicbir degisiklik gerekmiyor.
+        #
+        # Kosullu dal yok -- ONNX'te `if` yerine saf aritmetik:
+        #     logit = logit - (1 - gecerli) * bastir_maske * BASTIRMA
+        # gecerli=1 iken hicbir sey degismez, 0 iken saldiri logitleri
+        # -1e4'e iner. Yalnizca LessOrEqual/Cast/Mul/Sub kullaniliyor.
+        bastir = [0.0 if s == "noise" else 1.0 for s in self.siniflar]
+        if all(b == 1.0 for b in bastir):
+            raise ValueError(
+                f"siniflar arasinda 'noise' yok: {self.siniflar}. "
+                f"Bastirma hangi sinifa dusecegini bilemez.")
+        self.register_buffer("bastir_maske",
+                             torch.tensor(bastir).view(1, -1))
 
         # --- Hann penceresi: real_data._hann ile birebir ---
         n = torch.arange(n_fft, dtype=torch.float64)
@@ -280,22 +310,37 @@ class OnIslemeliModel(nn.Module):
         return (x - self.norm_mean) / self.norm_std
 
     def forward(self, sinyal):
-        """(B, 15000) -> (logit (B,3), bosluk_orani (B,))"""
+        """
+        (B, 15000) -> (logit (B, n_sinif), bosluk_orani (B,))
+
+        bos_bastir aciksa ve bosluk_orani esigi asiyorsa saldiri
+        siniflarinin logiti bastirilir, argmax `noise`'a duser.
+        """
         S = self.stft_genlik(self.normalize(sinyal))
         bosluk = self.bosluk_orani_stft(S)
-        return self.model(self.goruntu(self.db_cevir(S))), bosluk
+        logit = self.model(self.goruntu(self.db_cevir(S)))
+
+        if self.bos_bastir:
+            # (B,1): pencere gecerliyse 1.0, bossa 0.0
+            gecerli = (bosluk <= self.bos_esik).to(logit.dtype).unsqueeze(1)
+            logit = logit - (1.0 - gecerli) * self.bastir_maske * self.BASTIRMA
+        return logit, bosluk
 
 
 # ---------------------------------------------------------------
-def sarmalayici_kur(ckpt=None, renk=None, mimari=None, n_sinif=3, **model_kw):
+def sarmalayici_kur(ckpt=None, renk=None, mimari=None, n_sinif=3,
+                    bos_bastir=True, siniflar=None, **model_kw):
     """
     Ham sinyal alan sarmalanmis modeli kurar.
 
-    mimari / renk None ise checkpoint'ten OKUNUR (ckpt_oku). Elle vermek
-    otomatik tespiti ezer -- yalnizca checkpoint eksik bilgi tasiyorsa
-    gerekli.
+    mimari / renk / siniflar None ise checkpoint'ten OKUNUR (ckpt_oku).
+    Elle vermek otomatik tespiti ezer -- yalnizca checkpoint eksik bilgi
+    tasiyorsa gerekli.
+
+    bos_bastir : bosluk_orani esigi asan pencerelerde saldiri logitlerini
+        bastir, argmax `noise`'a dussun. Varsayilan ACIK.
     """
-    sd = None
+    sd, paket = None, {}
     if ckpt:
         paket, sd, bulunan, ckpt_renk, n_sinif = ckpt_oku(ckpt)
         if mimari and mimari != bulunan:
@@ -314,15 +359,43 @@ def sarmalayici_kur(ckpt=None, renk=None, mimari=None, n_sinif=3, **model_kw):
             print("  UYARI: checkpoint renk bilgisi tasimiyor, "
                   "'viridis' varsayildi")
 
+    siniflar = (siniflar or paket.get("siniflar")
+                or ["cutting", "climbing", "noise"])
+    siniflar = [str(s) for s in siniflar]
+
     net = model_kur(mimari, n_sinif, **model_kw)
     if sd is not None:
         net.load_state_dict(sd)
         print(f"  agirliklar yuklendi: {ckpt}")
-        print(f"  mimari: {mimari}   renk: {renk}   sinif: {n_sinif}")
+        print(f"  mimari: {mimari}   renk: {renk}   siniflar: {siniflar}")
         if "val_macro_f1" in paket:
             print(f"  val macro-F1: {paket['val_macro_f1']:.4f}  "
                   f"(epoch {paket.get('en_iyi_epoch')})")
-    return OnIslemeliModel(net, renk=renk).eval()
+    print(f"  bos pencere bastirma: "
+          f"{'ACIK -> argmax noise' if bos_bastir else 'KAPALI'}"
+          f"  (esik {rd.BOS_ESIK})")
+    return OnIslemeliModel(net, renk=renk, siniflar=siniflar,
+                           bos_bastir=bos_bastir).eval()
+
+
+def ornek_sinyal(n=2, tohum=0):
+    """
+    YAPILI test sinyali -- duz gurultu DEGIL.
+
+    Duz gurultunun bosluk_orani ~0.5 cikar ve BOS PENCERE BASTIRMASI
+    devreye girer. O zaman dogrulama -1e4 ile -1e4'u karsilastirir ve
+    gercek bir ayrismayi GOREMEZ -- asla basarisiz olamayan bir dogrulama
+    olur (bkz. `pencere_son` dersi, sonuc belgesi Bolum 8b).
+
+    Yapili sinyalde bosluk ~0.12, bastirma kapali kalir, logitler
+    gercekten karsilastirilir.
+    """
+    rng = np.random.default_rng(tohum)
+    t = np.arange(rd.PENCERE) / rd.FS
+    return np.stack([
+        np.abs(3 + np.sin(2 * np.pi * (20 + 15 * i) * t)
+               + 0.4 * rng.normal(0, 1, rd.PENCERE)) for i in range(n)
+    ]).astype(np.float32)
 
 
 def sayisal_dogrula(sarmal, n=4, tohum=0):
@@ -335,11 +408,7 @@ def sayisal_dogrula(sarmal, n=4, tohum=0):
     print("\n" + "=" * 70)
     print("SAYISAL DOGRULAMA -- sarmalayici vs real_data")
     print("=" * 70)
-    rng = np.random.default_rng(tohum)
-    t = np.arange(rd.PENCERE) / rd.FS
-    ham = np.stack([
-        np.abs(3 + np.sin(2 * np.pi * (20 + 15 * i) * t)
-               + 0.4 * rng.normal(0, 1, rd.PENCERE)) for i in range(n)])
+    ham = ornek_sinyal(n, tohum).astype(np.float64)
 
     with torch.no_grad():
         x = torch.from_numpy(ham).float()
@@ -400,7 +469,7 @@ def disa_aktar(sarmal, cikti, opset=13, dogrula=True):
     print(f"ONNX IHRACATI -> {cikti}  (opset {opset})")
     print("=" * 70)
     d_logit = None
-    ornek = torch.randn(2, rd.PENCERE).abs() * 3 + 3
+    ornek = torch.from_numpy(ornek_sinyal(2, tohum=0))
     # dynamo=False: eski TorchScript ihracatcisi. Yeni (torch.export tabanli)
     # ihracatci `onnxscript` istiyor ve sunucuda kurulu degil; eski yol bizim
     # grafigi sorunsuz cikariyor ve sunucudaki onnx 1.14 ile uyumlu.
@@ -450,7 +519,7 @@ def disa_aktar(sarmal, cikti, opset=13, dogrula=True):
         print(f"\n  Dinamik batch testi (ihracat batch={ornek.shape[0]}):")
         sorun = False
         for b in (1, 3, 16, 64):
-            x = torch.randn(b, rd.PENCERE).abs() * 3 + 3
+            x = torch.from_numpy(ornek_sinyal(b, tohum=b))
             try:
                 ol, ob = oturum.run(None, {"sinyal": x.numpy()})
                 with torch.no_grad():
@@ -465,7 +534,91 @@ def disa_aktar(sarmal, cikti, opset=13, dogrula=True):
                 print(f"    batch {b:>3}: HATA {type(e).__name__}: {str(e)[:90]}")
         assert not sorun, "dinamik batch calismiyor -- (None, 15000) verilemez"
         print(f"  [x] (None, {rd.PENCERE}) girdi sekli dogrulandi")
+
+        # --- BASTIRMA ONNX ICINDE DE CALISIYOR MU ---
+        #
+        # Ihracat ornegi YAPILI bir sinyal (bkz. ornek_sinyal), yani
+        # izleme sirasinda bastirma dali hic tetiklenmiyor. Eger
+        # do_constant_folding gecerlilik bayragini sabitleseydi ONNX
+        # ASLA bastirmazdi ve PyTorch tarafi dogru gorundugu icin
+        # fark edilmezdi. O yuzden ONNX'e ayrica BOS bir pencere
+        # veriliyor.
+        if sarmal.bos_bastir:
+            rng = np.random.default_rng(11)
+            duz = np.abs(rng.normal(0, 1, (2, rd.PENCERE))).astype(np.float32)
+            o_lg, o_bo = oturum.run(None, {"sinyal": duz})
+            noise_idx = sarmal.siniflar.index("noise")
+            tahmin = o_lg.argmax(1)
+            print(f"\n  Bastirma ONNX icinde:")
+            print(f"    bosluk {np.round(o_bo, 3).tolist()}  ->  "
+                  f"{[sarmal.siniflar[t] for t in tahmin]}   "
+                  f"logit[0] {np.round(o_lg[0], 1).tolist()}")
+            assert (o_bo > sarmal.bos_esik).all(), \
+                f"test sinyali bos cikmadi ({o_bo}) -- bastirma sinanamadi"
+            assert (tahmin == noise_idx).all(), (
+                "BASTIRMA ONNX'E GECMEMIS: bos pencerede argmax "
+                f"{[sarmal.siniflar[t] for t in tahmin]}. Muhtemelen "
+                "constant folding gecerlilik bayragini sabitledi.")
+            print(f"    [x] ONNX de bastiriyor -- grafik sabitlenmemis")
     return cikti, d_logit
+
+
+def bastirma_dogrula(sarmal, tohum=7):
+    """
+    BOS PENCERE BASTIRMASI gercekten calisiyor mu?
+
+    Iki sinyal veriliyor:
+      duz gurultu -> spektrum duz -> bosluk_orani ~0.5 -> BASTIRILMALI
+      yapili      -> bosluk ~0.12                      -> DOKUNULMAMALI
+
+    Bu kontrol olmadan bastirma sessizce devre disi kalabilir (yanlis
+    sinif sirasi, yanlis esik, maske sifirlanmasi) ve HICBIR SEY belli
+    olmaz -- tam da bu projenin tekrar tekrar yakalandigi hata turu.
+    """
+    print("\n" + "=" * 70)
+    print("BOS PENCERE BASTIRMASI")
+    print("=" * 70)
+    if not sarmal.bos_bastir:
+        print("  bastirma KAPALI -- dogrulama atlandi")
+        return None
+
+    rng = np.random.default_rng(tohum)
+    duz = np.abs(rng.normal(0, 1, (3, rd.PENCERE))).astype(np.float32)
+    yapili = ornek_sinyal(3, tohum)
+    noise_idx = sarmal.siniflar.index("noise")
+
+    sonuc = {}
+    for ad, x, bos_bekleniyor in (("duz gurultu", duz, True),
+                                  ("yapili sinyal", yapili, False)):
+        with torch.no_grad():
+            logit, bosluk = sarmal(torch.from_numpy(x))
+        lg, bo = logit.numpy(), bosluk.numpy()
+        tahmin = lg.argmax(1)
+        print(f"\n  {ad}:")
+        print(f"    bosluk_orani : {np.round(bo, 4).tolist()}  "
+              f"(esik {sarmal.bos_esik})")
+        print(f"    tahmin       : "
+              f"{[sarmal.siniflar[t] for t in tahmin]}")
+        print(f"    logit[0]     : {np.round(lg[0], 3).tolist()}")
+
+        gercekten_bos = bo > sarmal.bos_esik
+        if bos_bekleniyor:
+            assert gercekten_bos.all(), (
+                f"duz gurultunun bosluk_orani esigi asmadi: {bo} -- "
+                f"test sinyali yeterince duz degil, bastirma sinanamadi")
+            assert (tahmin == noise_idx).all(), (
+                f"BASTIRMA CALISMIYOR: bos pencerede argmax "
+                f"{[sarmal.siniflar[t] for t in tahmin]}, 'noise' bekleniyordu")
+            print(f"    [x] Bastirildi -> argmax 'noise'")
+        else:
+            assert not gercekten_bos.any(), (
+                f"yapili sinyal bos sayildi: {bo} -- esik cok dusuk?")
+            assert lg.max() < 100, (
+                f"yapili sinyalde bastirma tetiklendi: {lg}")
+            print(f"    [x] Dokunulmadi -- logitler normal aralikta")
+        sonuc[ad] = (bo.tolist(), [sarmal.siniflar[t] for t in tahmin])
+    print(f"\n  [x] Bastirma her iki yonde de dogru davraniyor")
+    return sonuc
 
 
 def opset_karsilastir(sarmal, opsetler=(13, 17), n=4, tohum=1):
@@ -489,8 +642,7 @@ def opset_karsilastir(sarmal, opsetler=(13, 17), n=4, tohum=1):
     print("\n" + "=" * 70)
     print(f"OPSET KARSILASTIRMASI -- {opsetler}")
     print("=" * 70)
-    rng = np.random.default_rng(tohum)
-    x = (np.abs(rng.normal(0, 1, (n, rd.PENCERE))) * 3 + 3).astype(np.float32)
+    x = ornek_sinyal(n, tohum)          # yapili -- bastirma tetiklenmesin
 
     with torch.no_grad():
         ref = sarmal(torch.from_numpy(x))[0].numpy()
@@ -612,18 +764,33 @@ def model_karti(onnx_yol, ckpt=None, sarmal=None, dogrulama=None):
           f"oturum = ort.InferenceSession('{onnx_yol.name}')",
           f"# x: (batch, {rd.PENCERE}) float32 ham genlik",
           "logit, bosluk = oturum.run(None, {'sinyal': x})", "",
-          "sinif = logit.argmax(1)",
-          f"gecerli = bosluk <= {rd.BOS_ESIK}   # BU FILTRE ZORUNLU",
+          "sinif = logit.argmax(1)   # bos pencerelerde zaten 'noise'",
+          f"# bosluk_orani > {rd.BOS_ESIK} olan pencereler grafik icinde",
+          f"# bastiriliyor; ayrica filtre uygulamak GEREKMIYOR.",
+          f"bos = bosluk > {rd.BOS_ESIK}   # istersen ayrica isaretleyebilirsin",
           "```", "",
-          f"### `bosluk_orani` neden var", "",
-          f"{rd.BOS_FREKANS:.0f} Hz üstündeki enerji payı. Bu değer "
+          f"### Boş pencereler — **grafiğin içinde hallediliyor**", "",
+          f"`bosluk_orani`, {rd.BOS_FREKANS:.0f} Hz üstündeki enerji payı. "
           f"**{rd.BOS_ESIK}'in üstündeyse** pencerede tespit edilebilir "
           f"sinyal yok demektir.", "",
-          "Eğitim verisinde bu pencereler **elendi** (train'in %23'ü). Yani "
-          "model onlar için **eğitilmedi** — filtre uygulanmazsa o "
-          "pencerelerde anlamsız ama kendinden emin tahminler üretir.", "",
-          "ONNX grafiği koşullu çıktı veremediği için filtre dışarıda "
-          "uygulanmak zorunda.", "",
+          "Eğitim verisinde bu pencereler **elendi** (train'in %23'ü), yani "
+          "model onlar için **eğitilmedi**. Ölçüldü: filtresiz bırakılırsa "
+          "modelin `argmax`'i boş pencerelerin **%99.8'inde** bir saldırı "
+          "sınıfı veriyor.", "",
+          f"**Bu yüzden bastırma grafiğe gömüldü:** `bosluk_orani > "
+          f"{rd.BOS_ESIK}` olduğunda saldırı sınıflarının logitinden büyük "
+          f"bir sabit düşülür ve `argmax` kendiliğinden **`noise`**'a "
+          f"düşer. Çağıran tarafta ek bir şey yapmaya gerek yok.", "",
+          "```python",
+          "sinif = logit.argmax(1)      # bos pencerede zaten 'noise'",
+          "```", "",
+          "⚠️ Boş pencerelerde `noise` logiti dokunulmadan bırakılır, "
+          "diğerleri `-1e4`'e iner. Yani çok büyük negatif logit görürseniz "
+          "bu bir hata değil, **kasıtlı bastırma** işaretidir.", "",
+          f"⚠️ `noise` sınıfı artık **iki şeyi** temsil ediyor: "
+          f"etiketlenmiş gürültü olayı **ve** boş pencere. Ayırmak "
+          f"isterseniz `bosluk_orani > {rd.BOS_ESIK}` kontrolüne bakın — "
+          f"değer hâlâ ikinci çıktı olarak veriliyor.", "",
           "## Grafiğin içindeki zincir", "", "```",
           "ham sinyal (batch, 15000)",
           "  -> normalize: (x - medyan) / MAD",
@@ -691,13 +858,18 @@ if __name__ == "__main__":
     ap.add_argument("--mimari", default=None,
                     choices=["DASNetBiLSTM", "DASNet"],
                     help="varsayilan: checkpoint'ten tespit edilir")
+    ap.add_argument("--bastirma-kapat", action="store_true",
+                    help="bos pencere bastirmasini KAPAT (eski davranis: "
+                         "bos pencerede de saldiri sinifi dondurulur)")
     a = ap.parse_args()
 
     if not a.ckpt and not a.sahte_agirlik:
         ap.error("--ckpt ver ya da --sahte-agirlik kullan")
 
-    sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk, mimari=a.mimari)
+    sarmal = sarmalayici_kur(ckpt=a.ckpt, renk=a.renk, mimari=a.mimari,
+                             bos_bastir=not a.bastirma_kapat)
     d_db = sayisal_dogrula(sarmal)
+    bastirma_dogrula(sarmal)
     d_opset = opset_karsilastir(sarmal) if a.opset_karsilastir else None
     cikti = a.cikti or str(Path(a.ckpt).with_suffix(".onnx") if a.ckpt
                            else "bilstm_sahte.onnx")

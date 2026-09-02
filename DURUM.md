@@ -61,23 +61,29 @@ fazla** karışıyor, **özellikle kenar kanallarda** — oysa test setinde
 ölçüldü, saha zayıf kanalları da içeriyor. Kendi model kartımız bu sınırı
 zaten yazmıştı.
 
-**✅ SEBEP BULUNDU (2026-09-01, `src/bos_pencere_testi.py`):** boş
-pencerelerde (eğitimde elenen %22) iki model zıt davranıyor —
+**✅ SEBEP BULUNDU (2026-09-01, `src/bos_pencere_testi.py`) — ve mimari
+değil, RENK TEMSİLİ.** Eğitimde elenen boş pencerelerde (%22):
 
-| | boş pencerede en büyük logit | logit>0.9 saldırı | dolu/boş ayrım |
-|---|---|---|---|
-| **SK** (koşu 3) | maks **+0.858** | **%0.0** | **5.2×** |
-| **BiLSTM** (koşu 4) | ort **+1.552** | **%99.7** | **1.14×** |
+| koşu | mimari | renk | boş maks logit | ayrım | logit>0.9 saldırı |
+|---|---|---|---|---|---|
+| 1 | SK | **viridis** | +1.943 | **0.80×** | **%99.7** |
+| 4 | BiLSTM | **viridis** | +1.771 | 1.14× | **%99.7** |
+| 3 | SK | **gri** | +0.858 | **5.18×** | **%0.0** |
+| 5 | SK | **gri** | +1.168 | 4.47× | %0.1 |
 
-SK boş pencerede susuyor (0.9 eşiğini hiç aşamıyor). BiLSTM susmuyor:
-%99.7 oranında `climbing` diyor ve boştaki güveni SK'nin gerçek
-olaydaki güveninden yüksek. Hiçbir eşik kurtarmıyor.
+İki viridis modeli de boş pencerede emin şekilde saldırı ilan ediyor
+(koşu 1 boşta doludan *daha* emin). İki gri modeli de susuyor —
+logitleri 0.9 eşiğini aşamıyor. Mimari ve rejim ilgisiz.
 
-→ **`bosluk_orani > 0.45` filtresi saha hattında zorunlu.** Filtresiz
-BiLSTM kullanılamaz. macro-F1 0.9390 boş pencerelerin elendiği bir test
-setinde ölçülmüştü; saha onları içeriyor.
+→ **🔒 Viridis bırakıldı, bundan sonrası `renk="gri"`** (Bölüm 9).
+Viridis'in tek gerekçesi sentetik modelle temsil paritesiydi; koşu 2 o
+aktarımı çürütmüştü, yani gerekçe zaten düşmüştü.
 
-Tam kayıt, karıştırıcı değişken (gri/viridis) ve karar:
+→ **Teslim ettiğimiz `sk_gri_kosu3.onnx` gri, yani sağlam olan.**
+Sorumlunun elindeki `bilstm_kosu4.onnx` viridis — waterfall'daki
+karışmanın kaynağı bu.
+
+Tam kayıt, çürütülen ilk teşhis ve mekanizma hipotezi:
 `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8c.
 
 Sıradaki işler Bölüm 5'in sonunda ve
@@ -336,8 +342,14 @@ Sorumlunun isteği: `(None, 15000)` girdi, yani **ham sinyal**. Bu yüzden
 ```
 girdi   sinyal       (batch, 15000)  ham genlik, P alani
 cikti   logit        (batch, 3)      [cutting, climbing, noise]
-        bosluk_orani (batch,)        > 0.45 ise tahmin KULLANILMAZ
+        bosluk_orani (batch,)        bilgi amacli
 ```
+
+✅ **Boş pencere bastırması grafiğe gömüldü** (2026-09-01):
+`bosluk_orani > 0.45` ise saldırı logitlerinden 1e4 düşülüyor, `argmax`
+kendiliğinden `noise`'a düşüyor. Çıktı şekli değişmedi, çağıranda
+değişiklik gerekmiyor. Koşullu dal yok, saf aritmetik. ONNX'in de
+bastırdığı ayrıca doğrulanıyor (constant folding sabitlemesin diye).
 
 Dört ONNX engeli çözüldü (`fft_rfft`, `median`, adaptive pooling,
 antialias) — ayrıntı ve doğrulama sayıları sonuç belgesinde.
@@ -358,6 +370,7 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | **A** | **Gri+SK (koşu 3) ONNX'e çevir** | Sorumlunun isteği. Ham sinyal `(None,15000)`, opset 13, `--renk gri`. Waterfall'da BiLSTM ile karşılaştırılacak |
 | **B** | **`bosluk_orani` filtresi saha hattında uygulanıyor mu — SOR** | Kenar kanal karışmasının en olası sebebi. Bölüm 8c hipotez 1 |
 | **C** | Test setini `bosluk_orani` dilimlerine böl, dilim başına macro-F1 | "Zayıf sinyalde ne oluyor" sorusunu sayıya çevirir |
+| **D** | **Koşu 7: BiLSTM + GRİ** | Hiç denenmedi. Koşu 4 viridis'ti. BiLSTM'in +0.065 kazancı mimariden geliyorsa, gri BiLSTM hem yüksek doğruluk hem boşluk sağlamlığı verir. **En değerli sıradaki koşu** |
 | 4 | Koşu 6: geniş SK + yeni rejim | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı |
 | 5 | Sorumluya özet | Beş koşu, en iyi model, ONNX teslimi |
 
@@ -779,6 +792,22 @@ takas edilecek ikili tam da en çok karışan `climbing`/`cutting`.
 Değiştirilecek yer `onbellek_kur.SINIFLAR`; değişince **önbellek yeniden
 kurulmalı** ve modeller yeniden eğitilmeli. Ayrıntı ve eski modeli
 dönüştürme yöntemi: `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8d.
+
+### 🔒 Girdi temsili GRİ (2026-09-01'den itibaren)
+
+**Bundan sonraki tüm eğitimler `renk="gri"`.** Viridis bırakıldı.
+
+Sebep ölçüldü: viridis ile eğitilen modeller **boş pencerelerde** gerçek
+olay seviyesinde güven üretiyor (logit +1.8, ayrım 0.80–1.14×), gri ile
+eğitilenler susuyor (logit +0.26, ayrım 4.5–5.2×). Sahada bu, boş
+kanallarda kesintisiz yanlış alarm demek.
+
+Viridis'in tek gerekçesi sentetik önceden-eğitilmiş modelle **temsil
+paritesiydi**. Koşu 2 o aktarımın işe yaramadığını gösterdi ve sentetik
+model bırakıldı — gerekçe o gün düşmüştü. macro-F1 kazancı +0.011'di.
+
+Ölçüm ve tablo: `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8c ·
+`src/bos_pencere_testi.py`
 
 ### 🔒 ONNX her zaman ham sinyal alır
 
