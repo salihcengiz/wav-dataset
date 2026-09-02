@@ -333,6 +333,120 @@ pencereleri de içeriyor.
 | 2 | BiLSTM zayıf pencerelere SK'den **daha kırılgan**. Dikkatli zaman havuzlama tek bir sahte darbeye kilitlenebilir; `AdaptiveAvgPool2d(1)` onu ortalamaya karıştırıp söndürür | SK'yi de ONNX'e çevirip aynı waterfall'da karşılaştır — **sorumlunun istediği bu** |
 | 3 | Kenar kanallarda etiketin kendisi gürültülü (kanal aralığının kenarı olayı zar zor görüyor ama "olay" etiketli) | `bosluk_orani`'na göre kanal-içi konumla çapraz tablo |
 
+### ✅ ÖLÇÜLDÜ (2026-09-01, Detailed Test) — model "hiçbir şey yok" diyemiyor
+
+İki pencere elle incelendi (çıktılar **ham logit**; arayüz 100 ile çarpıp
+`%` gösteriyor — `161.7%` ve `−159.9%` bunu kanıtlıyor):
+
+| pencere | gerçek | cutting | climbing | noise | modelin dediği |
+|---|---|---|---|---|---|
+| A | `climbing` | **+1.617** | −0.800 | −1.599 | `cutting` — emin ve **yanlış** |
+| B | **boş** | −0.354 | **+0.808** | −1.110 | `climbing` — **hiç olay yok** |
+
+**B satırı teşhisi veriyor:** pencere boş, ama modelin `noise` skoru
+−1.110. Yani model boş bir pencerede `noise` seçeneğini *aktif olarak
+reddediyor*.
+
+**Sebep, eğitim tasarımının doğrudan sonucu:**
+
+- `noise`, CSV'de **etiketlenmiş bir olay türü** (ortam gürültüsü, araç).
+  "Pencerede bir şey yok" demek **değil**.
+- Boş pencereler eğitimden **silindi** (`bos_mu`, train'in %23'ü),
+  `noise` diye etiketlenmedi.
+
+→ **Modelin "hiçbir şey yok" cevabı yok.** Üç olay sınıfı var ve her
+pencerede birini seçmek zorunda. Boş pencere verilirse en çok neye
+benziyorsa onu der, ve emin bir tonla der.
+
+**Waterfall'daki her şey bundan çıkıyor:**
+
+| gözlem | açıklama |
+|---|---|
+| Kanal 0 baştan sona `cutting` (30 s kesintisiz) | Ölü/zayıf kanal. Model susamıyor. Kanalın gürültü karakteri sabit olduğu için hep aynı sınıf |
+| `climbing` ızgaranın her yerine dağılmış | Boş pencereler; bir şey seçmek zorunda |
+| `noise` neredeyse hiç seçilmiyor | Çünkü `noise` sessizlik değil, bir olay türü |
+
+**Mekanizma:** normalizasyon pencere-içi medyan/MAD. Ölü bir kanalda
+gerçek sinyal yok, sadece gürültü var — normalizasyon o gürültüyü birim
+ölçeğe kadar **büyütüyor** ve gerçek bir olay kadar "belirgin" görünen
+anlamsız bir spektrogram çıkıyor.
+
+### İki ayrı problem
+
+| | ne | çözüm |
+|---|---|---|
+| **A** | Model susamıyor (boş pencerede emin tahmin) | **Yeniden eğitim DEĞİL.** `bosluk_orani > 0.45` olan pencereler modele hiç sorulmamalı. Model bu değeri zaten ikinci çıktı olarak üretiyor; **saha arayüzü okumuyor** |
+| **B** | `climbing` ↔ `cutting` karışması | Bilinen, çözülmemiş sorun. Satır A'daki örnek: gerçek `climbing`, model +1.617 ile `cutting` diyor |
+
+A'yı düzeltmek B'yi çözmez ama waterfall'ı okunabilir kılar — şu an B,
+A'nın gürültüsü altında görünmüyor.
+
+⚠️ **Sınıf eşiği (`CLASS THRESHOLDS`) A'nın çözümü değildir.** O, modelin
+*çıktısına* uygulanan bir karar eşiği; `bosluk_orani` ise *girdinin*
+geçerli olup olmadığını söylüyor. Eşiği düşürmek durumu kötüleştirir.
+Gözlem: eşik 0.90 iken B penceresinin kazanan logiti 0.808, yani eşiğin
+**altında** — eşik ham logite uygulanıyorsa o hücre waterfall'da
+renklenmez. Doğrulanmalı.
+
+### ✅✅ ÖLÇÜLDÜ (2026-09-01, `src/bos_pencere_testi.py`) — HİPOTEZ 2 DOĞRULANDI
+
+Eğitim CSV'sinden **5.000 pencere** örneklendi, `bos_ele=False` ile
+yüklendi ve `bosluk_orani > 0.45` olanlar ayrıldı. Boş oranı **%22.0** —
+önbellek kurulumundaki %23 ile örtüşüyor (bağımsız doğrulama).
+
+**Boş pencerelerde (model bunlar için EĞİTİLMEDİ):**
+
+| model | tahmin dağılımı | en büyük logit | **logit>0.9 saldırı** |
+|---|---|---|---|
+| **koşu 3 · SK · gri** | cutting %26, climbing %74 | ort **+0.258**, maks **+0.858** | **%0.0** |
+| **koşu 4 · BiLSTM · viridis** | climbing **%99.7** | ort **+1.552**, maks +1.771 | **%99.7** |
+
+**Dolu pencerelerle ayrım:**
+
+| model | boş | dolu | ayrım |
+|---|---|---|---|
+| SK | +0.258 | +1.334 | **5.2×** |
+| BiLSTM | +1.552 | +1.763 | **1.14×** |
+
+**SK boş pencerede susuyor.** Logitleri sıfıra çöküyor; **maksimumu bile
+0.858**, yani 0.9 eşiğini hiç aşamıyor. Eşik tam da boşlukla doluluk
+arasındaki aralığa düşüyor — sorumlunun "iyi test 0.9 ile olur" demesi
+SK için birebir doğru.
+
+**BiLSTM boş pencerede susmuyor.** Boş penceredeki güveni (+1.552),
+SK'nin *gerçek olaydaki* güveninden (+1.334) **yüksek**. Ve %99.7'sinde
+aynı şeyi diyor: `climbing`. Bu tahmin değil, dejenere bir refleks.
+
+**Hiçbir eşik BiLSTM'i kurtarmıyor:** `>1.5`'te bile boş pencerelerin
+%79.8'ine saldırı diyor. SK ise `>0.5`'te zaten %4.5'e iniyor.
+
+### Bu neyi açıklıyor
+
+1. **Sorumlunun saha gözlemini.** Kenar kanallar = zayıf/boş pencereler =
+   BiLSTM'in ayırt edemediği yer. "Saldırı sınıfları ile `noise` çok
+   karışıyor, özellikle kenar kanallarda" — ölçülen davranış bu.
+2. **macro-F1'in neden yanılttığını.** 0.9390, boş pencerelerin
+   **elendiği** bir test setinde ölçüldü. Saha onları da içeriyor.
+   BiLSTM'in +0.065'lik üstünlüğü sahada tersine dönüyor.
+3. **Mimari mekanizmayı.** Dikkatli zaman havuzlama, boş bir pencerede de
+   bir zaman adımına ağırlık vermek zorunda — softmax toplamı 1. Global
+   ortalama havuzlama (SK) gürültüyü ortalamaya karıştırıp söndürüyor.
+
+⚠️ **Karıştırıcı değişken:** koşu 3 **gri**, koşu 4 **viridis**. Bu
+karşılaştırma mimariyi ve renk temsilini birlikte değiştiriyor.
+**Koşu 1 (viridis + SK)** ikisini ayırır ve script'e eklendi:
+koşu 1 de susuyorsa fark mimariden, bağırıyorsa viridis'ten.
+
+### Karar
+
+- **`bosluk_orani > 0.45` filtresi saha hattında ZORUNLU.** İlkeli çözüm,
+  iki mimari için de çalışır. ONNX değeri ikinci çıktı olarak veriyor.
+- **Filtre yoksa BiLSTM sahada kullanılamaz.** SK + eşik 0.9 kombinasyonu
+  filtresiz bile makul davranıyor — sorumlunun SK'yi de test etme isteği
+  bu yüzden yerindeydi.
+- **Model seçimi yalnızca macro-F1 ile yapılamaz.** Bundan sonraki
+  karşılaştırmalara "boş pencerede ayrım" ölçütü eklenmeli.
+
 ### Ders
 
 **Tek bir toplam skor (macro-F1) dağılım kaymasını göstermez.** 0.9390 ile

@@ -61,8 +61,23 @@ fazla** karışıyor, **özellikle kenar kanallarda** — oysa test setinde
 ölçüldü, saha zayıf kanalları da içeriyor. Kendi model kartımız bu sınırı
 zaten yazmıştı.
 
-**Sorumlunun isteği: SK modeli de ONNX'e çevrilip aynı waterfall'da
-karşılaştırılsın.** Hipotezler ve sınama yolu:
+**✅ SEBEP BULUNDU (2026-09-01, `src/bos_pencere_testi.py`):** boş
+pencerelerde (eğitimde elenen %22) iki model zıt davranıyor —
+
+| | boş pencerede en büyük logit | logit>0.9 saldırı | dolu/boş ayrım |
+|---|---|---|---|
+| **SK** (koşu 3) | maks **+0.858** | **%0.0** | **5.2×** |
+| **BiLSTM** (koşu 4) | ort **+1.552** | **%99.7** | **1.14×** |
+
+SK boş pencerede susuyor (0.9 eşiğini hiç aşamıyor). BiLSTM susmuyor:
+%99.7 oranında `climbing` diyor ve boştaki güveni SK'nin gerçek
+olaydaki güveninden yüksek. Hiçbir eşik kurtarmıyor.
+
+→ **`bosluk_orani > 0.45` filtresi saha hattında zorunlu.** Filtresiz
+BiLSTM kullanılamaz. macro-F1 0.9390 boş pencerelerin elendiği bir test
+setinde ölçülmüştü; saha onları içeriyor.
+
+Tam kayıt, karıştırıcı değişken (gri/viridis) ve karar:
 `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8c.
 
 Sıradaki işler Bölüm 5'in sonunda ve

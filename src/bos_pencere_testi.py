@@ -174,6 +174,8 @@ def rapor(ad, logit, maske, esik):
                        for e in ESIKLER))
     return {"n": n,
             "saldiri": float(saldiri.mean()),
+            "ort_logit": float(en_buyuk.mean()),
+            "maks_logit": float(en_buyuk.max()),
             "esikli": {e: float(((en_buyuk > e) & saldiri).mean())
                        for e in ESIKLER}}
 
@@ -224,12 +226,19 @@ def main():
     print(f"bosluk_orani dagilimi: min {bosluk.min():.3f}  "
           f"medyan {np.median(bosluk):.3f}  maks {bosluk.max():.3f}")
 
+    # Kosu 3 (gri+SK) ile kosu 4 (viridis+BiLSTM) karsilastirmasi MIMARI ve
+    # RENGI birlikte degistiriyor. Kosu 1 (viridis+SK) ikisini ayiriyor:
+    #   kosu 1 de susuyorsa  -> fark MIMARIDEN
+    #   kosu 1 de bagiriyorsa -> fark VIRIDIS'ten
+    KOSULAR = [("kosu1-SK-viridis", "kosu1_viridis_sifirdan.pt"),
+               ("kosu3-SK-gri", "kosu3_gri_sifirdan.pt"),
+               ("kosu5-SK-gri-yeni", "kosu5_gri_sifirdan_yeni_rejim.pt"),
+               ("kosu4-BiLSTM", "kosu4_bilstm_yeni_rejim.pt")]
     modeller = {}
-    for ad, ck in [("SK", "kosu3_gri_sifirdan.pt"),
-                   ("BiLSTM", "kosu4_bilstm_yeni_rejim.pt")]:
+    for ad, ck in KOSULAR:
         yol = Path(a.cikti) / ck
         if not yol.exists():
-            print(f"  {ad}: checkpoint yok ({yol}) -- atlaniyor")
+            print(f"  {ad}: checkpoint yok ({ck}) -- atlaniyor")
             continue
         modeller[ad] = sarmalayici_kur(ckpt=str(yol))
 
@@ -240,9 +249,15 @@ def main():
         print(f"{ad}")
         print("-" * 78)
         print(f"  *** BOS pencereler (model bunlar icin EGITILMEDI) ***")
-        ozet[ad] = rapor("BOS", logit, bos, a.esik)
+        b = rapor("BOS", logit, bos, a.esik)
         print(f"  --- DOLU pencereler (kontrast; egitimde goruldu) ---")
-        rapor("DOLU", logit, ~bos, a.esik)
+        d = rapor("DOLU", logit, ~bos, a.esik)
+        if b and d:
+            b["ayrim"] = d["ort_logit"] / max(b["ort_logit"], 1e-9)
+            print(f"  {'':5s} >>> AYRIM: dolu/bos ortalama logit orani = "
+                  f"{b['ayrim']:.2f}x   "
+                  f"(bos maks {b['maks_logit']:+.3f} vs esik {a.esik})")
+        ozet[ad] = b
 
     print("\n" + "=" * 78)
     print("SONUC")
@@ -250,15 +265,18 @@ def main():
     if not any(ozet.values()):
         print("  BOS pencere bulunamadi -- bu ornekte hicbiri esigi asmadi.")
         print(f"  (--bos-esik ile esik dusurulebilir; su an {a.bos_esik})")
+    print(f"  {'model':<20s} {'bos maks':>9s} {'ayrim':>7s} "
+          + "".join(f"{'>'+str(e):>9s}" for e in ESIKLER))
     for ad, o in ozet.items():
         if not o:
             continue
-        p = o["esikli"][a.esik] if a.esik in o["esikli"] else o["saldiri"]
-        print(f"  {ad:6s}: egitimde elenen {o['n']:,} pencerenin "
-              f"**%{100*p:.1f}**'ine logit>{a.esik} ile SALDIRI diyor")
-        print(f"  {'':6s}  esik taramasi: "
-              + "  ".join(f">{e}: %{100*v:.1f}"
-                          for e, v in o["esikli"].items()))
+        print(f"  {ad:<20s} {o['maks_logit']:>+9.3f} "
+              f"{o.get('ayrim', float('nan')):>6.2f}x "
+              + "".join(f"{100*o['esikli'][e]:>8.1f}%" for e in ESIKLER))
+    print(f"\n  'bos maks' = bos pencerelerde gorulen EN YUKSEK logit.")
+    print(f"  Esikten KUCUKSE model bos pencerede hic alarm uretmez.")
+    print(f"  'ayrim'   = dolu/bos ortalama logit orani. 1'e yakinsa model")
+    print(f"  bosluk ile olayi AYIRT EDEMIYOR demektir.")
     print("\n  Bu oran yuksekse: bosluk_orani filtresi saha hattinda")
     print("  uygulanmali. ONNX bu degeri ikinci cikti olarak zaten veriyor.")
     print("  Oran, filtrenin ONLEYECEGI yanlis alarmin ust siniridir.")
