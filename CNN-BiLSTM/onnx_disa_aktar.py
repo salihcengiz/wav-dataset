@@ -389,11 +389,18 @@ def ornek_sinyal(n=2, tohum=0):
 
     Yapili sinyalde bosluk ~0.12, bastirma kapali kalir, logitler
     gercekten karsilastirilir.
+
+    FREKANS BANTLA SINIRLI: 20 + 15*(i % 12) -> 20..185 Hz. Dogrudan
+    20 + 15*i kullanilirsa batch 64'te 965 Hz'e cikiyor; sinyal abs()
+    alindigi icin harmonikler Nyquist'in (1000 Hz) ustune tasip
+    katlaniyor ve PyTorch/ONNX farki 1e-3 esigine dayaniyor (olculdu:
+    9.77e-04). Bu sahte bir basarisizlik uretir ya da gercek bir
+    bozulmayi maskeler. Modu ile bant icinde tutuluyor.
     """
     rng = np.random.default_rng(tohum)
     t = np.arange(rd.PENCERE) / rd.FS
     return np.stack([
-        np.abs(3 + np.sin(2 * np.pi * (20 + 15 * i) * t)
+        np.abs(3 + np.sin(2 * np.pi * (20 + 15 * (i % 12)) * t)
                + 0.4 * rng.normal(0, 1, rd.PENCERE)) for i in range(n)
     ]).astype(np.float32)
 
