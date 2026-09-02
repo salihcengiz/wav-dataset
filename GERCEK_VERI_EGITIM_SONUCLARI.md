@@ -750,6 +750,14 @@ olabilir" uyarısı basıyor.
       `paket/bilstm_kosu4_KULLANIM.md`. İçeriği doğrulandı: performans
       tablosu, sınıf metrikleri, kullanım şartları, sınırlar hepsi var.
       İki küçük eksik kaldı (aşağıda)
+- [ ] ⚠️ **KAÇIRMA — henüz incelenmedi.** Saha waterfall'ında (benchmark
+      `.bin` dosyası, record_26) **"weak climbing" GT kutusu neredeyse
+      tamamen boş** — model o olayı kaçırmış. Yanındaki normal `climbing`
+      kutusunu yakalamış. Ölçüm de bunu destekliyor: `.bin` taramasında
+      **GT-içi pencerelerin %16.0'ına model `noise` diyor**, yani gerçek
+      olayların altıda birini kaçırıyoruz.
+      **Çevre güvenliğinde kaçırılan ihlal, fazladan alarmdan daha
+      pahalıdır** — yanlış alarm sorunu kapandıktan sonra buna bakılacak.
 - [ ] **Kart düzeltmesi (b)** — pencereyi **15.000 örneğe oturtma** tarifi
       kartta yok (uzunsa enerji merkezine kırp, kısaysa yansıtmalı doldur).
       `hypot(re,im)`/`P` seçimi gibi bu da grafiğin **dışında**, çağıranın

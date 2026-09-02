@@ -223,6 +223,89 @@ def rapor(kayitlar, koruma=0.95):
     return sonuc
 
 
+def kanal_raporu(kayitlar, esik=0.9):
+    """
+    KANAL BAZINDA yanlis alarm dokumu.
+
+    Saha waterfall'inda yanlis alarmin imzasi belirgin: TEK KANAL, SABIT
+    SINIF, butun zaman boyunca. Kanal 0'da 30 saniye kesintisiz `cutting`
+    gibi. Gercek bir cit olayi birden fazla BITISIK kanala baglanir (GT
+    kutulari da oyle); tek kanalda sureklilik fiziksel olarak olay degil,
+    KANAL ARTEFAKTIDIR.
+
+    Bu yuzden iki sey birlikte raporlaniyor:
+      saldiri%   -- GT disindaki pencerelerin kaci saldiri sinifi aldi
+      tutarlilik -- o kanalin GT disi tahminlerinin kaci AYNI sinif
+    Ikisi de yuksekse (mesela %80 saldiri + %95 tutarlilik) o kanal
+    artefakt uretiyor demektir. Gercek gurultu cesitlenir.
+    """
+    from collections import Counter
+    if "tahmin" not in kayitlar[0]:
+        return []
+    print("\n" + "=" * 78)
+    print("KANAL BAZINDA -- GT DISI PENCERELER")
+    print("=" * 78)
+    print(f"  {'kanal':>5} {'n':>5} {'saldiri%':>9} {'tutarli%':>9} "
+          f"{'baskin':>9} {'bosluk':>8} {'dusuk_fr':>9} {'mad':>8}")
+    print("  " + "-" * 68)
+
+    kanallar = sorted({k["kanal"] for k in kayitlar})
+    supheli = []
+    for kn in kanallar:
+        d = [k for k in kayitlar if k["kanal"] == kn and not k["gt"]]
+        if len(d) < 3:
+            continue
+        t = [k["tahmin"] for k in d]
+        lg = np.array([k["logit"] for k in d])
+        saldiri = np.array([x in ("cutting", "climbing") for x in t])
+        emin_saldiri = (saldiri & (lg > esik)).mean()
+        say = Counter(t)
+        baskin, n_baskin = say.most_common(1)[0]
+        tutarlilik = n_baskin / len(t)
+
+        isaret = ""
+        if emin_saldiri > 0.3 and tutarlilik > 0.8:
+            isaret = "  <-- ARTEFAKT SUPHESI"
+            supheli.append((kn, emin_saldiri, tutarlilik, baskin))
+        print(f"  {kn:>5} {len(d):>5} {100*emin_saldiri:>8.1f}% "
+              f"{100*tutarlilik:>8.1f}% {baskin:>9} "
+              f"{np.mean([k['bosluk_orani'] for k in d]):>8.3f} "
+              f"{np.mean([k['dusuk_frek'] for k in d]):>9.3f} "
+              f"{np.mean([k['mad_ham'] for k in d]):>8.1f}{isaret}")
+
+    if supheli:
+        print(f"\n  {len(supheli)} kanal artefakt suphesi tasiyor.")
+        print("  Bu kanallarin olcutlerini digerleriyle karsilastir --")
+        print("  aralarindaki fark, dogru bosluk olcutunu verir.")
+    else:
+        print("\n  Artefakt suphesi tasiyan kanal YOK.")
+        print("  Saha waterfall'indaki surekli sutunlar bu dosyada")
+        print("  okuyabildigimiz kanallarda (71-97) gorunmuyor olabilir --")
+        print("  arayuz tum kanallari (201) okuyor, biz 11'ini.")
+    return supheli
+
+
+def kacirma_raporu(kayitlar, esik=0.9):
+    """GT-ici pencerelerin kaci KACIRILDI (noise dendi ya da esigin altinda)."""
+    if "tahmin" not in kayitlar[0]:
+        return
+    ici = [k for k in kayitlar if k["gt"]]
+    if not ici:
+        return
+    t = [k["tahmin"] for k in ici]
+    lg = np.array([k["logit"] for k in ici])
+    noise_dedi = np.array([x == "noise" for x in t])
+    esik_alti = lg <= esik
+    kacirildi = noise_dedi | esik_alti
+    print("\n" + "=" * 78)
+    print("KACIRMA -- GT ICI PENCERELER")
+    print("=" * 78)
+    print(f"  n={len(ici):,}   'noise' dedi: %{100*noise_dedi.mean():.1f}   "
+          f"logit<={esik}: %{100*esik_alti.mean():.1f}")
+    print(f"  TOPLAM KACIRILAN: %{100*kacirildi.mean():.1f}")
+    print("  (cevre guvenliginde kacirilan ihlal, fazladan alarmdan pahalidir)")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Bosluk olcutu taramasi")
     ap.add_argument("--dizin", default=DIZIN)
@@ -251,3 +334,5 @@ if __name__ == "__main__":
         print(f"  checkpoint yok ({a.ckpt}) -- yalnizca olcutler")
 
     rapor(kayitlar, a.koruma)
+    kanal_raporu(kayitlar)
+    kacirma_raporu(kayitlar)
