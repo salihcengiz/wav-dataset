@@ -54,6 +54,8 @@ HAM_DIZIN = "/tf/rawData/2026_newdata/IGA_RECORDS"
 KOPYA_DIZIN = "/tf/segment/Fence Benchmark Data"
 CKPT = ("/tf/start_training/RELATIONNET/FENCE_DATA_NEW/"
         "egitim_ciktilari/kosu3_gri_sifirdan.pt")
+CKPT_BILSTM = ("/tf/start_training/RELATIONNET/FENCE_DATA_NEW/"
+               "egitim_ciktilari/kosu4_bilstm_yeni_rejim.pt")
 SINIF = ["cutting", "climbing", "noise"]
 SALDIRI = ("cutting", "climbing")
 
@@ -87,7 +89,7 @@ def olcutler(s):
 
 
 def topla(ham_dizin, kopya_dizin, adim, kanal_adim, sarmallar, cihaz,
-          n_dosya=None, batch=64):
+          n_dosya=None, batch=64, birincil=None):
     import torch
     kayitlar = []
     hamlar = sorted(glob.glob(os.path.join(ham_dizin, "*.bin")))[:n_dosya]
@@ -115,15 +117,16 @@ def topla(ham_dizin, kopya_dizin, adim, kanal_adim, sarmallar, cihaz,
                 tampon.append(s.astype(np.float32))
                 meta.append(o)
                 if len(tampon) == batch:
-                    _tahmin(tampon, meta, sarmallar, cihaz, kayitlar)
+                    _tahmin(tampon, meta, sarmallar, cihaz, kayitlar,
+                            birincil)
                     tampon, meta = [], []
         if tampon:
-            _tahmin(tampon, meta, sarmallar, cihaz, kayitlar)
+            _tahmin(tampon, meta, sarmallar, cihaz, kayitlar, birincil)
         del A
     return kayitlar
 
 
-def _tahmin(tampon, meta, sarmallar, cihaz, kayitlar):
+def _tahmin(tampon, meta, sarmallar, cihaz, kayitlar, birincil):
     """
     Her pencereyi TUM sarmalayicilardan gecirir.
 
@@ -143,9 +146,9 @@ def _tahmin(tampon, meta, sarmallar, cihaz, kayitlar):
         for ad, lg in ciktilar.items():
             o[f"tahmin_{ad}"] = SINIF[int(lg[i].argmax())]
             o[f"logit_{ad}"] = float(lg[i].max())
-        # geriye donuk: artefakt analizi bastirmasiz cikti uzerinden
-        o["tahmin"] = o["tahmin_bastirmasiz"]
-        o["logit"] = o["logit_bastirmasiz"]
+        # artefakt/kanal analizi BIRINCIL modelin ciktisi uzerinden
+        o["tahmin"] = o[f"tahmin_{birincil}"]
+        o["logit"] = o[f"logit_{birincil}"]
         kayitlar.append(o)
 
 
@@ -156,11 +159,14 @@ def alarm(ks, esik, ek=""):
 
 def karsilastir(kayitlar, adlar, esikler=(0.5, 0.75, 0.9, 1.1)):
     """
-    Iki modeli AYNI pencerelerde yan yana koyar.
+    N modeli AYNI pencerelerde yan yana koyar.
 
     Waterfall gorsellerine bakip "kacirma artmis gibi" demek olcum
-    degil. Bu tablo bastirmanin bedelini ve kazancini ayni veride,
+    degil. Bu tablo her modelin bedelini ve kazancini ayni veride,
     ayni esiklerde gosteriyor.
+
+    Satir duzeni (sutun degil) cunku ikiden fazla model karsilastiriliyor:
+    SK/BiLSTM x bastirmali/bastirmasiz.
     """
     ici = [k for k in kayitlar if k["gt"]]
     disi = [k for k in kayitlar if not k["gt"]]
@@ -169,33 +175,46 @@ def karsilastir(kayitlar, adlar, esikler=(0.5, 0.75, 0.9, 1.1)):
     print("\n" + "=" * 92)
     print(f"KARSILASTIRMA  (GT-ici {len(ici):,}  GT-disi {len(disi):,})")
     print("=" * 92)
-    print(f"  {'esik':>6} " + "".join(
-        f"{ad + ' KACIRMA':>22s}{ad + ' Y.ALARM':>22s}" for ad in adlar))
-    print("  " + "-" * 88)
-    for e in esikler:
-        satir = f"  {e:>6.2f} "
-        for ad in adlar:
-            ek = f"_{ad}"
-            satir += (f"{100*(1-alarm(ici, e, ek).mean()):>21.1f}%"
-                      f"{100*alarm(disi, e, ek).mean():>21.1f}%")
-        print(satir)
-
-    # 0.90'da net fark
-    e = 0.9
-    print(f"\n  Esik {e} icin fark:")
+    print(f"  {'model':<22s} {'esik':>6s} {'KACIRMA':>10s} {'Y.ALARM':>10s}")
+    print("  " + "-" * 54)
     for ad in adlar:
         ek = f"_{ad}"
-        print(f"    {ad:<14s} kacirma %{100*(1-alarm(ici, e, ek).mean()):.1f}"
-              f"   yanlis alarm %{100*alarm(disi, e, ek).mean():.1f}")
-    if len(adlar) == 2:
-        a, b = adlar
-        dk = ((1 - alarm(ici, e, f"_{b}").mean())
-              - (1 - alarm(ici, e, f"_{a}").mean()))
-        dy = alarm(disi, e, f"_{b}").mean() - alarm(disi, e, f"_{a}").mean()
-        print(f"\n    {b} - {a}:  kacirma {100*dk:+.1f} puan   "
-              f"yanlis alarm {100*dy:+.1f} puan")
-        print(f"    -> kaldirilan her 1 puan yanlis alarm icin "
-              f"{abs(dk/dy) if dy else float('nan'):.2f} puan kacirma bedeli")
+        for e in esikler:
+            print(f"  {ad:<22s} {e:>6.2f} "
+                  f"{100*(1-alarm(ici, e, ek).mean()):>9.1f}% "
+                  f"{100*alarm(disi, e, ek).mean():>9.1f}%")
+        print()
+
+
+def dosya_raporu(kayitlar, adlar, esik=0.9):
+    """
+    DOSYA BAZINDA kacirma/yanlis alarm.
+
+    Toplam bir ORTALAMA; kacirma dosyadan dosyaya %16.7 ile %72.7 arasi
+    degisiyor (olculdu). Tek bir ortalamayi sabit bir ozellik gibi
+    kullanmak yaniltici -- bu tablo "record_52'de de tekrarla" isini
+    ayri kosuya gerek birakmadan cevapliyor.
+    """
+    if not adlar:
+        return
+    print("\n" + "=" * 92)
+    print(f"DOSYA BAZINDA  (esik {esik})")
+    print("=" * 92)
+    dosyalar = sorted({k["dosya"] for k in kayitlar})
+    print(f"  {'dosya':<34s} {'GT-ici':>7s} "
+          + "".join(f"{ad[:12] + ' kac/ya':>22s}" for ad in adlar))
+    print("  " + "-" * (43 + 22 * len(adlar)))
+    for d in dosyalar:
+        g = [k for k in kayitlar if k["dosya"] == d]
+        ici = [k for k in g if k["gt"]]
+        disi = [k for k in g if not k["gt"]]
+        satir = f"  {d[:34]:<34s} {len(ici):>7} "
+        for ad in adlar:
+            ek = f"_{ad}"
+            kac = (1 - alarm(ici, esik, ek).mean()) if ici else float("nan")
+            ya = alarm(disi, esik, ek).mean() if disi else float("nan")
+            satir += f"{100*kac:>13.1f}% /{100*ya:>5.1f}%"
+        print(satir)
 
 
 def kanal_raporu(kayitlar, esik, en_fazla=40):
@@ -277,7 +296,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Ham dosyalarda tam kanal analizi")
     ap.add_argument("--ham-dizin", default=HAM_DIZIN)
     ap.add_argument("--kopya-dizin", default=KOPYA_DIZIN)
-    ap.add_argument("--ckpt", default=CKPT)
+    ap.add_argument("--ckptler", nargs="+", default=[CKPT, CKPT_BILSTM],
+                    help="karsilastirilacak checkpoint'ler; her biri "
+                         "bastirmali VE bastirmasiz olarak kosulur")
     ap.add_argument("--adim", type=int, default=8000)
     ap.add_argument("--kanal-adim", type=int, default=1)
     ap.add_argument("--esik", type=float, default=0.9)
@@ -288,23 +309,34 @@ if __name__ == "__main__":
     import torch
     from onnx_disa_aktar import sarmalayici_kur
     cihaz = a.cihaz or ("cuda" if torch.cuda.is_available() else "cpu")
-    # IKI model, ayni gecisde: artefakt analizi bastirmasiz cikti
-    # uzerinden yapiliyor, karsilastirma ikisi arasinda.
-    sarmallar = {
-        "bastirmasiz": sarmalayici_kur(ckpt=a.ckpt, bos_bastir=False)
-                       .to(cihaz).eval(),
-        "bastirmali": sarmalayici_kur(ckpt=a.ckpt, bos_bastir=True)
-                      .to(cihaz).eval(),
-    }
+
+    # Her checkpoint bastirmali VE bastirmasiz olarak kosuluyor.
+    # Etiket dosya adinin ilk parcasindan: kosu3_gri_sifirdan -> kosu3
+    sarmallar, adlar = {}, []
+    for yol in a.ckptler:
+        if not os.path.exists(yol):
+            print(f"  checkpoint yok, atlandi: {yol}")
+            continue
+        kok = os.path.basename(yol).split("_")[0]
+        for ek, bastir in (("", False), ("+bas", True)):
+            ad = kok + ek
+            sarmallar[ad] = (sarmalayici_kur(ckpt=yol, bos_bastir=bastir)
+                             .to(cihaz).eval())
+            adlar.append(ad)
+    if not sarmallar:
+        sys.exit("hic model yuklenemedi")
+    # artefakt analizi ilk modelin BASTIRMASIZ ciktisi uzerinden
+    birincil = adlar[0]
 
     kayitlar = topla(a.ham_dizin, a.kopya_dizin, a.adim, a.kanal_adim,
-                     sarmallar, cihaz, a.dosya)
+                     sarmallar, cihaz, a.dosya, birincil=birincil)
     if not kayitlar:
         sys.exit("hic pencere toplanamadi")
     gt = sum(k["gt"] for k in kayitlar)
     print(f"\nPENCERE: {len(kayitlar):,}   GT-ici: {gt:,}   "
-          f"GT-disi: {len(kayitlar)-gt:,}")
+          f"GT-disi: {len(kayitlar)-gt:,}   modeller: {adlar}")
 
     supheli = kanal_raporu(kayitlar, a.esik)
     olcut_karsilastir(kayitlar, supheli)
-    karsilastir(kayitlar, ["bastirmasiz", "bastirmali"])
+    karsilastir(kayitlar, adlar)
+    dosya_raporu(kayitlar, adlar, a.esik)
