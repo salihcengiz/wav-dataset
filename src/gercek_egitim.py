@@ -110,6 +110,17 @@ KOSULAR = {
     # kadarinin mimariden geldigi buradan cikarilir.
     # Ayri numara: kosu 3'un dosyalarinin uzerine YAZMAZ.
     5: {"ad": "gri_sifirdan_yeni_rejim", "renk": "gri", "aktarim": False},
+    # 7: BiLSTM + GRI. Kosu 4 ile TEK farki renk temsili -- temiz,
+    # tek degiskenli karsilastirma.
+    #
+    # Neden: kosu 4 (BiLSTM + viridis) sahada bastirmasiz %55.5 yanlis
+    # alarm veriyor; bastirma bunu %1.4'e indiriyor ama SK+gri'nin
+    # %0.5'ine inemiyor. Viridis'in zarari bastirmanin yakalamadigi bir
+    # yerde. Gri BiLSTM, BiLSTM'in kacirma ustunlugunu (%31.2 vs %40.8)
+    # gri'nin bosluk saglamligiyla birlestirebilir.
+    #
+    # Olcum: GERCEK_VERI_EGITIM_SONUCLARI.md Bolum 8
+    7: {"ad": "bilstm_gri", "renk": "gri", "aktarim": False},
 }
 
 

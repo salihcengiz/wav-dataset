@@ -72,11 +72,24 @@ from model_bilstm import DASNetBiLSTM               # noqa: E402
 MASKE_P = 0.0
 MAKS_EPOCH = 80
 SABIR = 10
-KOSU_NO = 4
+KOSU_NO = 7          # varsayilan artik GRI (bkz. asagi)
+
+# Hangi kosu numarasi hangi girdi temsili -- renk gercek_egitim.KOSULAR'dan
+# geliyor, burada yalnizca aciklama:
+#   4  viridis   ilk BiLSTM kosusu (test macro-F1 0.9390)
+#   7  gri       ayni mimari, TEK fark renk
+#
+# Varsayilan 7 cunku viridis birakildi (DURUM.md Bolum 9): viridis ile
+# egitilen modeller bos pencerelerde gercek olay seviyesinde guven
+# uretiyor ve sahada yaygin yanlis alarma yol aciyor.
+KOSULAR_BILSTM = (4, 7)
 
 
 def main():
     ap = argparse.ArgumentParser(description="CNN + BiLSTM egitimi")
+    ap.add_argument("--kosu", type=int, default=KOSU_NO,
+                    choices=KOSULAR_BILSTM,
+                    help="7 = gri (varsayilan), 4 = viridis (eski)")
     ap.add_argument("--veri", default=str(VERI))
     ap.add_argument("--cikti", default=str(CIKTI))
     ap.add_argument("--epoch", type=int, default=MAKS_EPOCH)
@@ -121,12 +134,20 @@ def main():
         print(f"  !!! omurga DASNet ile ayni DEGIL -- karsilastirma kirlenir")
     # Konsol ciktisi ASCII: Windows'ta cp1254 kodlamasi Unicode simgeleri
     # basamiyor ve surec UnicodeEncodeError ile oluyor.
-    print(f"\n  ASILMASI GEREKEN: kosu 1, test macro-F1 0.8843")
-    print(f"  UYARI: Bu kosu mimari VE rejimi birlikte degistiriyor; sonuc")
-    print(f"    iyi cikarsa atif icin SK modelini de yeni rejimle kosmak")
-    print(f"    gerekir (--kosu 1 --maske-p 0 --epoch 80 --sabir 10).")
+    if a.kosu == 7:
+        print(f"\n  KOSU 7 -- BiLSTM + GRI")
+        print(f"  Kosu 4 (BiLSTM + viridis) ile TEK farki renk temsili;")
+        print(f"  temiz, tek degiskenli karsilastirma.")
+        print(f"  ASILMASI GEREKEN: kosu 4, test macro-F1 0.9390")
+        print(f"  ASIL SORU: sahada bos pencerelerde susuyor mu?")
+        print(f"    kosu 4 bastirmasiz saha yanlis alarmi %55.5 (viridis)")
+        print(f"    kosu 3 bastirmasiz saha yanlis alarmi  %3.2 (gri)")
+    else:
+        print(f"\n  ASILMASI GEREKEN: kosu 1, test macro-F1 0.8843")
+        print(f"  UYARI: Bu kosu mimari VE rejimi birlikte degistiriyor;")
+        print(f"    atif icin SK'yi de yeni rejimle kosmak gerekir.")
 
-    return kos(KOSU_NO, veri=a.veri, cikti=a.cikti, epoch=a.epoch,
+    return kos(a.kosu, veri=a.veri, cikti=a.cikti, epoch=a.epoch,
                batch=a.batch, isci=a.isci,
                sinif_agirligi=a.sinif_agirligi, hizli=a.hizli,
                model_fn=model_fn, maske_p=a.maske_p, sabir=a.sabir)
