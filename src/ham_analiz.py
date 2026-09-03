@@ -86,7 +86,7 @@ def olcutler(s):
     }
 
 
-def topla(ham_dizin, kopya_dizin, adim, kanal_adim, sarmal, cihaz,
+def topla(ham_dizin, kopya_dizin, adim, kanal_adim, sarmallar, cihaz,
           n_dosya=None, batch=64):
     import torch
     kayitlar = []
@@ -115,28 +115,87 @@ def topla(ham_dizin, kopya_dizin, adim, kanal_adim, sarmal, cihaz,
                 tampon.append(s.astype(np.float32))
                 meta.append(o)
                 if len(tampon) == batch:
-                    _tahmin(tampon, meta, sarmal, cihaz, kayitlar)
+                    _tahmin(tampon, meta, sarmallar, cihaz, kayitlar)
                     tampon, meta = [], []
         if tampon:
-            _tahmin(tampon, meta, sarmal, cihaz, kayitlar)
+            _tahmin(tampon, meta, sarmallar, cihaz, kayitlar)
         del A
     return kayitlar
 
 
-def _tahmin(tampon, meta, sarmal, cihaz, kayitlar):
+def _tahmin(tampon, meta, sarmallar, cihaz, kayitlar):
+    """
+    Her pencereyi TUM sarmalayicilardan gecirir.
+
+    Iki model ayni gecisde olculuyor (bastirmasiz / bastirmali) cunku
+    goz karari karsilastirma yaniltici: iki waterfall gorseli farkli
+    cizimler ve "kacirma artti mi" sorusu ancak AYNI pencerelerde
+    olculerek cevaplanir.
+    """
     import torch
+    x = torch.from_numpy(np.stack(tampon)).to(cihaz)
+    ciktilar = {}
     with torch.no_grad():
-        lg, _ = sarmal(torch.from_numpy(np.stack(tampon)).to(cihaz))
-    lg = lg.cpu().numpy()
-    for o, l in zip(meta, lg):
-        o["tahmin"] = SINIF[int(l.argmax())]
-        o["logit"] = float(l.max())
+        for ad, s in sarmallar.items():
+            lg, _ = s(x)
+            ciktilar[ad] = lg.cpu().numpy()
+    for i, o in enumerate(meta):
+        for ad, lg in ciktilar.items():
+            o[f"tahmin_{ad}"] = SINIF[int(lg[i].argmax())]
+            o[f"logit_{ad}"] = float(lg[i].max())
+        # geriye donuk: artefakt analizi bastirmasiz cikti uzerinden
+        o["tahmin"] = o["tahmin_bastirmasiz"]
+        o["logit"] = o["logit_bastirmasiz"]
         kayitlar.append(o)
 
 
-def alarm(ks, esik):
-    return np.array([(k["tahmin"] in SALDIRI) and (k["logit"] > esik)
-                     for k in ks])
+def alarm(ks, esik, ek=""):
+    t, l = f"tahmin{ek}", f"logit{ek}"
+    return np.array([(k[t] in SALDIRI) and (k[l] > esik) for k in ks])
+
+
+def karsilastir(kayitlar, adlar, esikler=(0.5, 0.75, 0.9, 1.1)):
+    """
+    Iki modeli AYNI pencerelerde yan yana koyar.
+
+    Waterfall gorsellerine bakip "kacirma artmis gibi" demek olcum
+    degil. Bu tablo bastirmanin bedelini ve kazancini ayni veride,
+    ayni esiklerde gosteriyor.
+    """
+    ici = [k for k in kayitlar if k["gt"]]
+    disi = [k for k in kayitlar if not k["gt"]]
+    if not ici or not disi:
+        return
+    print("\n" + "=" * 92)
+    print(f"KARSILASTIRMA  (GT-ici {len(ici):,}  GT-disi {len(disi):,})")
+    print("=" * 92)
+    print(f"  {'esik':>6} " + "".join(
+        f"{ad + ' KACIRMA':>22s}{ad + ' Y.ALARM':>22s}" for ad in adlar))
+    print("  " + "-" * 88)
+    for e in esikler:
+        satir = f"  {e:>6.2f} "
+        for ad in adlar:
+            ek = f"_{ad}"
+            satir += (f"{100*(1-alarm(ici, e, ek).mean()):>21.1f}%"
+                      f"{100*alarm(disi, e, ek).mean():>21.1f}%")
+        print(satir)
+
+    # 0.90'da net fark
+    e = 0.9
+    print(f"\n  Esik {e} icin fark:")
+    for ad in adlar:
+        ek = f"_{ad}"
+        print(f"    {ad:<14s} kacirma %{100*(1-alarm(ici, e, ek).mean()):.1f}"
+              f"   yanlis alarm %{100*alarm(disi, e, ek).mean():.1f}")
+    if len(adlar) == 2:
+        a, b = adlar
+        dk = ((1 - alarm(ici, e, f"_{b}").mean())
+              - (1 - alarm(ici, e, f"_{a}").mean()))
+        dy = alarm(disi, e, f"_{b}").mean() - alarm(disi, e, f"_{a}").mean()
+        print(f"\n    {b} - {a}:  kacirma {100*dk:+.1f} puan   "
+              f"yanlis alarm {100*dy:+.1f} puan")
+        print(f"    -> kaldirilan her 1 puan yanlis alarm icin "
+              f"{abs(dk/dy) if dy else float('nan'):.2f} puan kacirma bedeli")
 
 
 def kanal_raporu(kayitlar, esik, en_fazla=40):
@@ -229,11 +288,17 @@ if __name__ == "__main__":
     import torch
     from onnx_disa_aktar import sarmalayici_kur
     cihaz = a.cihaz or ("cuda" if torch.cuda.is_available() else "cpu")
-    # bastirma KAPALI -- modelin ham davranisini olcuyoruz
-    sarmal = sarmalayici_kur(ckpt=a.ckpt, bos_bastir=False).to(cihaz).eval()
+    # IKI model, ayni gecisde: artefakt analizi bastirmasiz cikti
+    # uzerinden yapiliyor, karsilastirma ikisi arasinda.
+    sarmallar = {
+        "bastirmasiz": sarmalayici_kur(ckpt=a.ckpt, bos_bastir=False)
+                       .to(cihaz).eval(),
+        "bastirmali": sarmalayici_kur(ckpt=a.ckpt, bos_bastir=True)
+                      .to(cihaz).eval(),
+    }
 
     kayitlar = topla(a.ham_dizin, a.kopya_dizin, a.adim, a.kanal_adim,
-                     sarmal, cihaz, a.dosya)
+                     sarmallar, cihaz, a.dosya)
     if not kayitlar:
         sys.exit("hic pencere toplanamadi")
     gt = sum(k["gt"] for k in kayitlar)
@@ -242,4 +307,4 @@ if __name__ == "__main__":
 
     supheli = kanal_raporu(kayitlar, a.esik)
     olcut_karsilastir(kayitlar, supheli)
-    takas(kayitlar)
+    karsilastir(kayitlar, ["bastirmasiz", "bastirmali"])
