@@ -3,7 +3,7 @@
 > Bu dosya, projeye yeni katılan biri (veya yeni bir sohbet) için giriş
 > noktasıdır. Önce bunu oku, sonra aşağıdaki sıraya göre diğer dosyaları.
 
-**Son güncelleme:** 2026-09-01
+**Son güncelleme:** 2026-09-02
 
 ---
 
@@ -61,8 +61,25 @@ fazla** karışıyor, **özellikle kenar kanallarda** — oysa test setinde
 ölçüldü, saha zayıf kanalları da içeriyor. Kendi model kartımız bu sınırı
 zaten yazmıştı.
 
-**✅ SEBEP BULUNDU (2026-09-01, `src/bos_pencere_testi.py`) — ve mimari
-değil, RENK TEMSİLİ.** Eğitimde elenen boş pencerelerde (%22):
+**✅ ÇÖZÜLDÜ (2026-09-02).** Ölçülen sonuç, 7 dosya × 201 kanal ×
+8.040 pencere:
+
+| yapılandırma | kaçırma | yanlış alarm |
+|---|---|---|
+| eski model, eşik 0.90 | %39.7 | %3.2 |
+| **yeni model, eşik 0.75** | **%35.7** | **%0.8** |
+
+Her iki eksende de daha iyi. Waterfall'da sürekli yanlış alarm veren
+kanallar tamamen temizlendi, gerçek olay tespit edilmeye devam ediyor.
+Teslim: `sk_gri_kosu3_v2.onnx`, MLflow `2026-09-02-MODEL-SK_GRI_V2_PERİMETER`.
+
+Çözüm **yeniden eğitim gerektirmedi** — ONNX grafiğine iki aritmetik
+düzeltme. Ayrıntı: `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8.
+
+---
+
+**Teşhisin ilk adımı (2026-09-01, `src/bos_pencere_testi.py`) — sebep
+mimari değil, RENK TEMSİLİ.** Eğitimde elenen boş pencerelerde (%22):
 
 | koşu | mimari | renk | boş maks logit | ayrım | logit>0.9 saldırı |
 |---|---|---|---|---|---|
@@ -95,7 +112,7 @@ Sıradaki işler Bölüm 5'in sonunda ve
 
 | # | Dosya | Ne için |
 |---|---|---|
-| **1** | **`GERCEK_VERI_EGITIM_SONUCLARI.md`** | **EN GÜNCEL.** Beş koşunun sonuçları, atıf hesabı, çürütülen teşhis, ONNX, kod değişiklikleri, açık işler |
+| **1** | **`GERCEK_VERI_EGITIM_SONUCLARI.md`** | **EN GÜNCEL.** Beş koşu, atıf hesabı, çürütülen teşhisler, ONNX (opset 13 + boşluk bastırması), saha testi bulguları (8c–8f), açık işler |
 | 2 | `GERCEK_VERI_FAZ0_RAPORU.md` | Gerçek veri denetimi, kararlar (1.5), ayrılabilirlik (5.4), ortam/hız ölçümleri (8.5), önbellek (8.6) |
 | 3 | `src/real_data.py` | Ön işleme hattı. Docstring'ler gerekçeleri açıklıyor |
 | 4 | `CNN-BiLSTM/model_bilstm.py` | Kazanan mimari. Docstring'de tasarım gerekçeleri |
@@ -163,13 +180,25 @@ CSV'ler bir **indeks**: `file, channel, event, window_start, window_end`.
 çevresine kırpılmış** — record_26'da 201 kanaldan yalnızca 11'i (71–97).
 Saha waterfall'ında yanlış alarm üreten kanallar tam da eksik olanlar.
 
-Ham karşılıkları bulundu (12/17):
+Ham karşılıkları bulundu (**12/17**, `src/ham_esles.py`). Ham dosya adı =
+`.hdf5` uzantısı atılmış hâli; boyut oranı 7–17 kat, yani o kadar çok
+kanal:
 
 ```
-/tf/rawData/2026_newdata/IGA_RECORDS/            <- 7 .bin  (fs 2000)
+/tf/rawData/2026_newdata/IGA_RECORDS/            <- 7 .bin  (fs 2000) ⭐
 /tf/rawData/2026_newdata/GOSB/                   <- 2 .sdf
 /tf/rawData/2026_newdata/Turk_Telekom_Umitkoy/ttdata/  <- 3 .sdf
 ```
+
+Bulunamayan 5 (hepsi Mart 2026 `.sdf`, muhtemelen başka bir saha):
+`record_100`, `record_124`, `record_126`, `record_166`, `record_182`.
+
+⭐ **7 `.bin` en değerlisi:** örnekleme hızı tartışmasız 2000 Hz ve
+formatı çözüldü. Tüm ölçümler bunlarda yapılıyor.
+
+⚠️ `/tf` altında **447.606 dosya** var ve çoğu **başka projelere** ait
+(BOTAS, roketsan, brasil_solar, Ienergy...). Dosya adına bakıp bizim
+veri sanma.
 
 **Ham `.bin` formatı çözüldü ve doğrulandı** (2026-09-02):
 
@@ -401,9 +430,12 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | ~~1~~ | ✅ ~~Teslim paketini koşu 4'e güncelle~~ | **Kod hazır** (`MIMARILER`, iki mimari de yerelde test edildi). Sunucuda `python gercek_export.py --kosu 4` çalıştırılmalı |
 | ~~2~~ | ~~`gercek_rapor.py`'yi beş koşuyla çalıştır~~ | **Ertelendi** (2026-09-01) — böyle bir rapor şu an sorumludan beklenmiyor |
 | ~~3~~ | ✅ ~~ONNX kullanım kartını üret~~ | **Yapıldı.** `paket/bilstm_kosu4_KULLANIM.md`, performans tablosu dahil tam. İki küçük eksiği için sonuç belgesi Bölüm 10 |
-| **A** | **Gri+SK (koşu 3) ONNX'e çevir** | Sorumlunun isteği. Ham sinyal `(None,15000)`, opset 13, `--renk gri`. Waterfall'da BiLSTM ile karşılaştırılacak |
-| **B** | **`bosluk_orani` filtresi saha hattında uygulanıyor mu — SOR** | Kenar kanal karışmasının en olası sebebi. Bölüm 8c hipotez 1 |
-| **C** | Test setini `bosluk_orani` dilimlerine böl, dilim başına macro-F1 | "Zayıf sinyalde ne oluyor" sorusunu sayıya çevirir |
+| ~~A~~ | ✅ ~~Gri+SK ONNX'e çevir~~ | Yapıldı. `sk_gri_kosu3_v2.onnx` (bastırmalı) teslim edildi |
+| ~~B~~ | ✅ ~~`bosluk_orani` filtresi uygulanıyor mu~~ | Gerekmiyor — filtre grafiğe gömüldü, çağıranda değişiklik yok |
+| **C** | **Eşiği 0.75'e indirmesini sorumluya öner** | Ölçüldü: 0.90'a göre hem kaçırma hem yanlış alarm daha iyi |
+| **D** | **`record_52`'de doğrulamayı tekrarla** | Bastırma tek dosyada (record_26) doğrulandı. record_52 en kötü ikinci (%43.8 kaçırma) |
+| **E** | **Aynı düzeltmeyi BiLSTM'e uygula** | Koşu 4 viridis, boşlukta %99.7 yanlış alarm veriyordu. Bastırma onu ne kadar toparlıyor? |
+| **F** | **KAÇIRMA — %35.7** | Sıradaki asıl sorun. Çevre güvenliğinde kaçırılan ihlal, fazladan alarmdan pahalı. Dosya bazında %16.7–%72.7 arası değişiyor |
 | **D** | **Koşu 7: BiLSTM + GRİ** | Hiç denenmedi. Koşu 4 viridis'ti. BiLSTM'in +0.065 kazancı mimariden geliyorsa, gri BiLSTM hem yüksek doğruluk hem boşluk sağlamlığı verir. **En değerli sıradaki koşu** |
 | 4 | Koşu 6: geniş SK + yeni rejim | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı |
 | 5 | Sorumluya özet | Beş koşu, en iyi model, ONNX teslimi |
@@ -471,6 +503,38 @@ cevabı dosyaya bakılarak ölçülebilir bir olgudur.
 şeklini hiç anma. `.pt` ile `.onnx` farklı girdiler alıyorsa bunu yan
 yana yaz. `gercek_export.py`'nin ürettiği model kartı artık tam da bunu
 yapıyor (en üstteki "Hangi dosyayı kullanmalısınız" tablosu).
+
+### Yanlış popülasyonda ölçüp "işe yaramıyor" demek
+
+`dusuk_frek` ölçütü, benchmark `.hdf5` kopyalarında sınandı ve **işe
+yaramaz** göründü: gerçek olayların %95'ini koruyan eşikte olay-dışı
+pencerelerin yalnızca %45'ini eliyordu, üstelik elediği pencerelerde
+model **zaten doğruydu**. "Gerçek bir kazanç değil" diye not düştük.
+
+Ham dosyalar okunup **201 kanalın hepsinde** ölçülünce aynı ölçüt
+artefakt pencerelerinin **%92.5'ini** yakaladı ve sorunu çözen şey oldu.
+
+Sebep: `.hdf5` kopyaları olay çevresine kırpılmıştı ve o kanallarda model
+zaten kusursuz çalışıyordu (yanlış alarm %0.0). Yani ölçütü, çözmesi
+gereken problemin **hiç bulunmadığı** bir veride sınamışız.
+
+→ Bir ölçüt/çözüm işe yaramıyor görünüyorsa önce sor: **başarısız olduğu
+vakalar bu veride var mı?** Yoksa ölçüm sonucu değil, gürültü.
+
+### Açılamayan dosyayı "yok" saymak
+
+`kanal_avi.py`'nin ilk sürümü, `/tf` altında çok kanallı dosya arıyordu.
+En büyük 40 dosyanın **38'i açılamadı** (ham `.bin`/`.sdf`, HDF5 değil) —
+ve script bunları sessizce atlayıp **"TAM KANALLI dosya YOK"** diye sonuç
+bastı. Oysa açılamayan dosya hakkında hiçbir şey bilinemez.
+
+Yanlış sonuç bir an için "veri bu sunucuda yok, bu organizasyonel bir
+engel" dedirtti. Gerçekte veri oradaydı, sadece formatı okunamıyordu —
+ve format birkaç saat sonra çözüldü.
+
+→ Bir tarama "bulunamadı" diyorsa, **kaç adaya bakılamadığını** da
+raporlamalı. Script düzeltildi: açılamayanlar ayrı sayılıp "bunlar
+hakkında hiçbir şey bilinmez" diye açıkça yazılıyor.
 
 ### Şekil uyuyor diye anlam da uyuyor sanmak
 
@@ -608,8 +672,27 @@ yayılımı varsayılan olarak deterministik değil). `train.py` içinde
    Ortam kontrolü: **`python3 src/ortam_kontrol.py`**
 0c. ⚠️ **`bosluk_orani` filtresi.** ONNX modeli bu değeri çıktı veriyor ve
    `> 0.45` olan pencerelerin tahmini kullanılmamalı. Sorumluya iletilmeli.
-1. `.sdf.hdf5` dosyalarında `duration` ile örnek sayısı 2 kat uyuşmuyor
-   (`.bin`'de sorun yok). Gerçek frekans nedir?
+1. ✅ **CEVAPLANDI (2026-09-02) — ama sorumluya teyit ettirilmeli.**
+   `.sdf.hdf5` dosyalarında `duration × prf` ile diskteki örnek sayısı
+   **tam 2 kat** uyuşmuyor; `.bin`'de tam tutuyor. Ölçüldü:
+
+   | | duration × prf | diskte örnek | ima edilen fs |
+   |---|---|---|---|
+   | `.bin` (7 dosya) | 55.927 | 55.927 | **2000** ✓ |
+   | `.sdf` (10 dosya) | 35.466 | **70.933** | **4000** |
+
+   10 `.sdf`'in **hepsinde**, 7 `.bin`'in **hiçbirinde** yok. `prf`
+   özniteliği ikisinde de 2000 diyor, yani öznitelik yanıltıcı.
+
+   ⚠️ **Sonucu ağır:** arayüz `.sdf`'ten 15.000 örnek alıyorsa bu 7.5 s
+   değil **3.75 s** ve spektrogramdaki frekans içeriği **2 kat kayıyor**.
+   Model dağılım dışı bir girdi görüyor.
+
+   **Gözlem bunu destekliyor:** waterfall bir `.bin` dosyasında
+   koşturulunca `.sdf`'e göre kıyaslanamayacak kadar temiz çıktı. İlk
+   waterfall testlerinin çoğu `.sdf` üzerindeydi.
+
+   → Sorumluya sorulacak: `.sdf` kayıtları gerçekten 4000 Hz mi?
 2. `P`/`S` terminolojisi: dosya öznitelikleri `polarization: 2, port: 1`
    diyor, sorumlu "port" dedi. Rapor metninde hangisi kullanılmalı?
 3. Ekibin kodunda üç yanlış yorum satırı var (`# Sadece S bileşeni alınır`
@@ -740,6 +823,25 @@ Ama fonksiyonlar hücrede tanımlanırsa repodaki sürüm ile sunucuda gerçekte
 ⚠️ **Kabuk komutları `!` ile:** `!nvidia-smi`, `!python3 x.py`. Öneksiz
 yazılırsa `SyntaxError` verir.
 
+⚠️ **`git pull` her zaman çalışmıyor.** 2026-09-02'de GitHub önce
+anonim indirmeyi sınırladı (`temporarily limiting some unauthenticated
+downloads`), sonra kimlik sormaya başladı — ve `!` hücresinde giriş
+alamadığı için **sonsuza kadar bekledi**. Komutu şöyle yaz ki sorarsa
+hemen hata versin:
+
+```python
+!cd <kod> && GIT_TERMINAL_PROMPT=0 git pull && git log --oneline -1
+```
+
+Ve **geldiğini doğrula** — sessizce eski kodla koşmak en sinsi hata:
+
+```python
+!grep -c "<yeni_fonksiyon_adi>" <dosya>     # 0 donerse kod GELMEDI
+```
+
+`git` tıkalıysa `%%writefile` ile dosyayı doğrudan yaz; repodaki
+sürümün **birebir aynısını** kullan ki ayrışma olmasın.
+
 Alternatif: sol paneldeki **yukarı ok (↑)** ile yükleme (hâlâ çalışıyor).
 
 **Ölçülen ortam:** Linux, Python **3.11**, 8 CPU, 16.5 GB RAM, 646 GB boş
@@ -794,6 +896,52 @@ Run adı geleneği: `YYYY-MM-DD-MODEL-<MIMARI>_PERİMETER`.
 Yani MLflow'da opset, sınıf sırası ve `bosluk_orani` eşiği yazmıyor.
 `log_params` eklemek artefakt yolunu bozmaz ve karşılaştırmayı okunur
 kılar — önerilir.
+
+### E) Test arayüzü (waterfall / detailed test) — çalışma bilgisi
+
+Sorumlunun ekibinin web arayüzü. MLflow'daki modeli yükleyip benchmark
+dosyalarında koşturuyor. **Aynı sunucuda, tarayıcıdan.**
+
+**İki test kipi:**
+
+| | ne yapar | ne gösterir |
+|---|---|---|
+| **Waterfall Test** | Klasördeki dosyaları toplu koşturur | **Detection Waterfall** — modelin kararları (renkli hücreler) + **Ground Truth** çerçeveleri |
+| **Detailed Test** | Tek pencere (dosya/kanal/start time) | O pencerenin spektrogramı + üç logit. Alttaki "Global Waterfall" ham sinyal enerjisi, model çıktısı **değil** |
+
+**Detection Waterfall nasıl okunur:**
+- Yatay = fiber kanalı, dikey = zaman. Her hücre bir 7.5 s'lik pencere
+- **Dolgu rengi** = modelin kararı · **Çerçeve** = ground truth
+- Üç görsel durum: renkli (saldırı) · siyah (`noise` eşiği geçti) ·
+  koyu lacivert (**hiçbir sınıf eşiği geçemedi**)
+
+⚠️ **Boş hücre modelin susması değil, EŞİĞİN reddetmesi.** Model her
+zaman `argmax` ile bir sınıf seçer; arayüz eşiğin altındakini çizmez.
+
+⚠️ **Gösterilen yüzdeler HAM LOGİT, olasılık değil.** `161.7%` ve
+`−159.9%` gibi değerler çıkıyor — arayüz logiti 100 ile çarpıp `%`
+ekliyor. `CLASS THRESHOLDS` da ham logite uygulanıyor.
+
+⚠️ **GT kutusunun olmaması "orada hiçbir şey olmadı" demek DEĞİL.**
+GT yalnızca senaryolu olayları işaretliyor; araç, rüzgâr, etiketsiz
+gerçek sinyaller olabilir. Tek tek lekelere "yanlış alarm" demeden önce
+bunu hatırla. Tek kanalda süren **sütunlar** farklı — gerçek bir olay
+birden fazla bitişik kanala bağlanır, tek kanallı süreklilik fiziksel
+olarak olay değil, artefakttır.
+
+**Her koşuda kontrol edilecekler:**
+
+| ayar | dikkat |
+|---|---|
+| `Classes` | **Her seferinde `car/digging/excavation` varsayılanına dönüyor.** `cutting, climbing, noise` sırasında düzeltilmeli |
+| `Folder` | `Fence Benchmark Data` — `Buried Benchmark Data` **başka bir proje** (gömülü kablo, kazı/araç olayları). Bizim model orada anlamsız |
+| `Downsample` | Varsayılan 8. Modele giden sinyali de etkiliyorsa 250 Hz'e düşer ve sonuç çöp olur — **1'e çek** |
+| `Stride` | 4000 (%73 örtüşme) |
+| `MLflow Model Path` | `mlflow-artifacts:/89/<run_id>/artifacts/Onnx Model` |
+
+⚠️ **Arayüz `/tf/segment/Fence Benchmark Data/` altındaki `.hdf5`
+kopyalarını OKUMUYOR.** O kopyalarda 201 kanaldan 6–14'ü var, arayüz
+hepsini gösteriyor — yani ham dosyaları okuyor (Bölüm 4).
 
 ### Uzun koşuları arka planda başlatma
 

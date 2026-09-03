@@ -5,7 +5,7 @@
 >
 > **En iyi: CNN-BiLSTM, test macro-F1 0.9390** (taban çizgisi 0.771, **+0.168**)
 >
-> **Son güncelleme:** 2026-09-01
+> **Son güncelleme:** 2026-09-02
 
 ---
 
@@ -448,6 +448,38 @@ Bugünküne göre kaçırma −4.0, yanlış alarm −2.4 puan.
 ⚠️ Çekince: GT-içi örneklem **272 pencere**, 7 dosyadan. Yanlış alarm
 tarafı sağlam (7.768 pencere) ama kaçırma tahmini gürültülü olabilir.
 
+### Eşik hakkında iki ölçülmüş gerçek
+
+**1. 0.90'ın üstü saf kayıp.** Bastırmasız modelde yanlış alarm 0.90'da
+zaten dibe vuruyor; daha yükseğe çıkmak yalnızca kaçırmayı artırıyor:
+
+```
+0.90 -> kacirma 39.7%    1.30 -> 48.5%    1.75 -> 66.0%    2.00 -> 82.7%
+```
+
+Sorumlunun seçtiği 0.90 savunulabilir bir tercihti (yanlış alarmı
+sıfırlayan en küçük eşik) ama **üstüne çıkmanın hiçbir faydası yok.**
+
+**2. Kaçırma dosyadan dosyaya çok değişiyor.** %39.3 bir ortalama:
+
+| dosya | GT-içi pencere | kaçırma |
+|---|---|---|
+| record_26 | 110 | **%72.7** |
+| record_52 | 80 | %43.8 |
+| record_51 | 85 | %37.6 |
+| record_53 | 63 | %31.7 |
+| record_48 | 77 | %24.7 |
+| record_50 | 63 | %22.2 |
+| record_49 | 54 | **%16.7** |
+
+%16.7 ile %72.7 arası. record_26 hem en kötü hem en çok pencereli, yani
+ortalamayı o çekiyor (onsuz toplam %30.6). **Tek bir ortalamayı sabit bir
+özellik gibi kullanmak yanıltıcı** — bu, koşu 9 tartışmasında bir kez
+yapıldı ve düzeltildi.
+
+⚠️ record_26, waterfall'da "weak climbing" kutusunun boş çıktığı dosya.
+%72.7 kaçırma bununla tutarlı.
+
 ### Saha doğrulaması (waterfall, record_26)
 
 Bastırmalı model yüklenip aynı test tekrarlandı:
@@ -710,6 +742,35 @@ opset **13**, IR **7**, çıktılar `logit` + `bosluk_orani`.
 
 ---
 
+## 8f. DEĞERLENDİRİLEN AMA UYGULANMAYAN YAKLAŞIMLAR
+
+Yanlış alarm sorunu için tartışılan eğitim tarafı çözümler. **Hiçbiri
+uygulanmadı** çünkü sorun grafik seviyesinde çözüldü (Bölüm 8). Yeniden
+gündeme gelirse baştan tartışılmasın diye kayıtta.
+
+**Problemin doğru adı: açık küme tanıma (open-set recognition).**
+Kapalı küme eğitilmiş 3 sınıflı bir model, açık küme ortamda çalışıyor;
+sahadaki pencerelerin çoğu üç sınıfın hiçbirine ait değil. Bu, dengesiz
+sınıf ya da kötü konumlanmış karar sınırı problemi **değil**.
+
+| yaklaşım | değerlendirme |
+|---|---|
+| **Açısal marjin** (ArcFace/CosFace) | En ilgili olanı. Logit'i sınırsız iç çarpım yerine `[-1,1]` kosinüs benzerliğine çevirir, reddetme eşiği anlamlı olur. ⚠️ Ama normalizasyon **özellik normunu atıyor** ve OOD literatüründe norm başlı başına güçlü bir sinyal. Doğru kullanım: kosinüs sınıflandırma için, reddetme skoru ayrı. 3 sınıfla `s`/`m` ayarı hassas |
+| **Kosinüs kafa** (marjinsiz) | Yukarıdakinin ucuz hâli. Sınırlı, yorumlanabilir skor. Açısal marjine geçmeden önce denenecek adım |
+| **Dice loss** | **Uygun değil.** Piksel bazlı segmentasyonda küçük ön planı ayırmak için var; biz tüm pencereyi tek etiketle sınıflandırıyoruz. Ardındaki *segmentasyon çerçevesi* (kanal × zaman ızgarasında olay maskesi) ilginç ve `labels` verisi buna uygun — ama mimari değişikliği, büyük iş |
+| **Maliyet duyarlı / sınıf ağırlığı** | Sınırı **var olan sınıflar arasında** kaydırır, "hiçbiri" seçeneği yaratmaz. Ama `noise` = alarm yok olduğu için operasyonel olarak yumuşak bir reddetme sağlar. ⚠️ Etkisi büyük ölçüde **eşik değiştirmekle aynı** — yani eğriyi kaydırmayıp üzerinde kaydırma riski var. `--sinif-agirligi` bayrağı hazır (`cutting 0.451, climbing 0.386, noise 2.163`), hiç kullanılmadı |
+| **Boş pencerelerle eğitim** (outlier exposure) | Prensipte doğru ama **örneğimiz yok**: eğitim `.bin.hdf5` dosyaları da olay çevresine kırpılmış (`channels: 1956` diyor, diskte 16 kanal). Sildiğimiz 67.000 boş pencere farklı bir popülasyon — gri model onlarda zaten susuyor |
+
+**Neden hiçbiri gerekmedi:** `bosluk_orani` zaten kusursuz bir boşluk
+dedektörüydü, sadece **yanlış büyüklüğü** ölçüyordu. Ağa, basit bir
+frekans oranının kesin söylediği şeyi tahmin etmeyi öğretmek gereksizdi.
+
+**Ne zaman geri dönülür:** eşiğin *kenarındaki* pencereler (`dusuk_frek`
+0.85–0.91 bandı) hâlâ belirsiz. Sert eşiğin çözemediği tek yer orası;
+kaçırma sorununa geçildiğinde kosinüs kafa oradan başlanacak yer olabilir.
+
+---
+
 ## 8b. TEKNİK REFERANS
 
 Koda bakmadan hatırlanması gereken sabitler.
@@ -884,6 +945,12 @@ olabilir" uyarısı basıyor.
       olayların altıda birini kaçırıyoruz.
       **Çevre güvenliğinde kaçırılan ihlal, fazladan alarmdan daha
       pahalıdır** — yanlış alarm sorunu kapandıktan sonra buna bakılacak.
+- [ ] **`record_52`'de doğrulamayı tekrarla** — bastırma sonucu tek
+      dosyada (record_26) görüldü. record_52'nin kaçırması %43.8'di, en
+      kötü ikinci. Tek dosyaya bakıp genelleme yapmayalım
+- [ ] **BiLSTM'e de aynı düzeltmeyi uygula ve karşılaştır** — koşu 4
+      viridis, boş pencerelerde zaten çok kötüydü (%99.7). Bastırma onu
+      ne kadar toparlıyor? Gri SK ile aynı waterfall'da yan yana
 - [ ] **Kart düzeltmesi (b)** — pencereyi **15.000 örneğe oturtma** tarifi
       kartta yok (uzunsa enerji merkezine kırp, kısaysa yansıtmalı doldur).
       `hypot(re,im)`/`P` seçimi gibi bu da grafiğin **dışında**, çağıranın
