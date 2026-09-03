@@ -112,13 +112,18 @@ def ac_ve_bak(dosyalar, kac, esik_kanal=30):
     print(f"  {'dosya':<50s} {'MB':>7s} {'attr':>6s} {'diskte':>7s} "
           f"{'oran':>6s} {'aralik':>14s} {'fs':>7s}")
     print("  " + "-" * 92)
-    tam_kanalli = []
+    tam_kanalli, acilamayan = [], []
     for boyut, y in sorted(dosyalar, reverse=True)[:kac]:
         try:
             o = kanal_say(y)
         except Exception as e:              # noqa: BLE001
+            # ACILAMAYAN DOSYA HAKKINDA HICBIR SEY BILEMEYIZ.
+            # Ilk surumde bunlar sessizce atlaniyordu ve script "cok
+            # kanalli dosya yok" diye sonuc basiyordu -- oysa en buyuk
+            # 40 dosyanin 38'i acilamamisti. Ayri sayiliyor.
+            acilamayan.append((boyut, y, type(e).__name__))
             print(f"  {os.path.basename(y)[:50]:<50s} {boyut/1e6:>6.1f}M  "
-                  f"acilamadi: {type(e).__name__}")
+                  f"ACILAMADI ({type(e).__name__}) -- HDF5 degil?")
             continue
         oran = o["diskte"] / o["attr_kanal"] if o["attr_kanal"] else 0
         fs = (o["ornek"] / float(o["duration"])) if o["duration"] else 0
@@ -129,7 +134,7 @@ def ac_ve_bak(dosyalar, kac, esik_kanal=30):
         print(f"  {os.path.basename(y)[:50]:<50s} {boyut/1e6:>6.1f}M "
               f"{o['attr_kanal']:>6} {o['diskte']:>7} {oran:>6.2f} "
               f"{str(o['aralik']):>14s} {fs:>7.0f}{isaret}")
-    return tam_kanalli
+    return tam_kanalli, acilamayan
 
 
 if __name__ == "__main__":
@@ -150,20 +155,32 @@ if __name__ == "__main__":
         sys.exit("hic dosya bulunamadi")
 
     dizin_ozeti(dosyalar, a.dizin_sayisi)
-    tam = ac_ve_bak(dosyalar, a.ac, a.esik_kanal)
+    tam, acilamayan = ac_ve_bak(dosyalar, a.ac, a.esik_kanal)
 
     print("\n" + "=" * 96)
+    print("SONUC")
+    print("=" * 96)
     if tam:
-        print(f"{len(tam)} COK KANALLI dosya bulundu:")
+        print(f"{len(tam)} COK KANALLI (ve okunabilir) dosya bulundu:")
         for y, o in tam[:10]:
             print(f"  {y}")
             print(f"     diskte {o['diskte']} kanal "
                   f"({o['aralik'][0]}..{o['aralik'][1]}), "
                   f"{o['ornek']} ornek, dtype {o['dtype']}")
-        print("\nBunlar arka plan/olu kanal ornegi icerir -- yanlis alarm")
-        print("popülasyonunu bunlarda olcebiliriz.")
-    else:
-        print("TAM KANALLI dosya YOK.")
-        print("Tum kopyalar olay cevresine kirpilmis. Yanlis alarm veren")
-        print("kanallarin ham verisi bu sunucuda bulunmuyor olabilir --")
-        print("o durumda sorumluya iletilmesi gereken bir engel.")
+        print("\n  Bunlar arka plan / olu kanal ornegi icerebilir --")
+        print("  yanlis alarm populasyonunu bunlarda olcebiliriz.")
+
+    if acilamayan:
+        print(f"\n  ⚠ {len(acilamayan)} dosya ACILAMADI (incelenen "
+              f"{min(a.ac, len(dosyalar))} dosyanin buyuk kismi).")
+        print("  Bunlar HAM .bin/.sdf -- HDF5 degil, h5py okuyamiyor.")
+        print("  ACILAMAYAN DOSYA HAKKINDA HICBIR SEY BILINMEZ:")
+        print("  kac kanal tasidiklari, arka plan icerip icermedikleri")
+        print("  BILINMIYOR. 'Cok kanalli dosya yok' SONUCU CIKARILAMAZ.")
+        print(f"\n  Toplam {sum(b for b, _, _ in acilamayan)/1e9:.0f} GB ham veri.")
+        print("  Sonraki adim: bu formati okumak. Ekibin .hdf5 kopyalari")
+        print("  bunlardan uretilmis, yani bir donusturucu VAR:")
+        print("    grep -rl 'sdf\\|RealUInt16\\|pulsewidth' /tf --include=*.py")
+
+    if not tam and not acilamayan:
+        print("Ne cok kanalli ne de acilamayan dosya var.")
