@@ -20,9 +20,10 @@ eslemeyi 17 dosyanin hepsi icin yapiyor.
 
 === NASIL ===
 
-/tf tek gecis os.walk ile taraniyor ve DOSYA ADI -> yollar indeksi
-kuruluyor (447k dosya, ~20 sn). Sonra her benchmark dosyasinin ham adi
-bu indekste araniyor.
+/tf tek gecis os.walk ile taraniyor ve YALNIZCA aranan 17 adin yollari
+toplaniyor. os.walk adlari bedava veriyor; pahali olan stat, o yuzden
+stat sadece ESLESEN dosyalara uygulaniyor. (Ilk surum her dosyayi stat
+ediyordu -- 447.606 cagri, dakikalarca surdu.)
 
 Boyut orani onemli: ham dosya kac kat buyukse kabaca o kadar cok kanal
 tasiyor demektir. 20 kat buyukse ~20 kat kanal.
@@ -42,24 +43,33 @@ ATLA = {"proc", "sys", "dev", "__pycache__", ".git", "site-packages",
         "node_modules", ".ipynb_checkpoints"}
 
 
-def indeks_kur(kok, sure_butcesi=900):
-    """dosya adi -> [(boyut, yol), ...]  tek os.walk gecisinde."""
+def ara(kok, aranan, sure_butcesi=900, ilerleme=100000):
+    """
+    Yalnizca `aranan` kumesindeki ADLARI ariyor. ad -> [yol, ...]
+
+    ⚠ Ilk surum her dosya icin os.path.getsize cagiriyordu -- 447.606
+    stat islemi, dakikalarca surdu. os.walk zaten adlari BEDAVA veriyor;
+    pahali olan stat. Simdi stat yalnizca ESLESEN dosyalara uygulaniyor
+    (17 tane), tarama saniyeler suruyor.
+    """
     basla = time.time()
-    ix = defaultdict(list)
-    n, kesildi = 0, False
+    bulunan = defaultdict(list)
+    n, kesildi, son_bildirim = 0, False, 0
     for dizin, altlar, adlar in os.walk(kok, followlinks=False):
         altlar[:] = [d for d in altlar if d not in ATLA and not d.startswith(".")]
         if time.time() - basla > sure_butcesi:
             kesildi = True
             break
         for ad in adlar:
-            n += 1
-            try:
-                b = os.path.getsize(os.path.join(dizin, ad))
-            except OSError:
-                b = -1
-            ix[ad].append((b, os.path.join(dizin, ad)))
-    return ix, n, kesildi, time.time() - basla
+            if ad in aranan:
+                bulunan[ad].append(os.path.join(dizin, ad))
+        n += len(adlar)
+        if n - son_bildirim >= ilerleme:
+            son_bildirim = n
+            print(f"    {n:,} dosya... ({time.time()-basla:.0f} sn, "
+                  f"{sum(len(v) for v in bulunan.values())} eslesme)",
+                  flush=True)
+    return bulunan, n, kesildi, time.time() - basla
 
 
 def ham_adaylari(hdf5_ad):
@@ -93,9 +103,16 @@ if __name__ == "__main__":
     hedefler = sorted(os.listdir(a.kaynak))
     print(f"benchmark dosyasi: {len(hedefler)}  ({a.kaynak})")
 
-    print(f"indeks kuruluyor: {a.kok} ...")
-    ix, n, kesildi, gecen = indeks_kur(a.kok, a.sure)
-    print(f"  {n:,} dosya indekslendi, {gecen:.0f} sn"
+    # aranacak ad kumesi -- walk sirasinda O(1) kontrol
+    aranan = set()
+    for h in hedefler:
+        aranan.update(ham_adaylari(h))
+    print(f"aranan ad: {len(aranan)}")
+
+    print(f"taraniyor: {a.kok} ...", flush=True)
+    ix, n, kesildi, gecen = ara(a.kok, aranan, a.sure)
+    print(f"  {n:,} dosya tarandi, {gecen:.0f} sn, "
+          f"{sum(len(v) for v in ix.values())} eslesme"
           + ("   *** SURE DOLDU, EKSIK ***" if kesildi else ""))
 
     print("\n" + "=" * 100)
@@ -114,9 +131,13 @@ if __name__ == "__main__":
             continue
         vurus = []
         for aday in ham_adaylari(h):
-            for b, y in ix.get(aday, []):
-                if os.path.abspath(y) != os.path.abspath(yol_h):
-                    vurus.append((b, y))
+            for y in ix.get(aday, []):
+                if os.path.abspath(y) == os.path.abspath(yol_h):
+                    continue
+                try:                      # stat YALNIZCA eslesenlere
+                    vurus.append((os.path.getsize(y), y))
+                except OSError:
+                    vurus.append((-1, y))
         if vurus:
             b, y = max(vurus)
             kat = b / b_h if b_h else 0

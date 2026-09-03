@@ -127,6 +127,10 @@ alındı" sorusunun cevabı.
 | `CNN-BiLSTM/model_bilstm.py` | **Kazanan mimari** | aktif |
 | `CNN-BiLSTM/egitim_bilstm.py` | İnce koşturucu (`kos()` çağırır) | aktif |
 | `CNN-BiLSTM/onnx_disa_aktar.py` | ONNX ihracatı, ön işleme gömülü. **Her mimari için** — mimari ve renk checkpoint'ten okunuyor | aktif |
+| `src/ham_bin.py` | **Ham `.bin` okuyucu.** Benchmark kayıtlarının kırpılmamış hâli — 201 kanalın hepsi. Format çözüldü ve kopyayla doğrulandı (maks fark 0) | aktif |
+| `src/ham_analiz.py` | Tüm kanallarda yanlış alarm/kaçırma ölçümü, artefakt kanal tespiti | aktif |
+| `src/ham_esles.py` | Benchmark `.hdf5` kopyalarının ham karşılıklarını bulur | bir kerelik, bitti |
+| `src/kanal_avi.py` | `/tf` altında çok kanallı dosya arar | bir kerelik, bitti |
 | `src/ortam_kontrol.py` | **Ortam sağlık kontrolü.** Paket sürümleri, `/dev/shm`, CUDA, `torch.from_numpy`. Her `pip install`ten sonra koştur | aktif |
 | `src/bos_pencere_testi.py` | Boş pencerelerde model ne diyor — boşluk/olay ayrımını ölçer | aktif |
 | `src/sunucu_kontrol.py` | Sunucu ortam + hız ölçümü | bir kerelik, bitti |
@@ -152,6 +156,34 @@ paylaşılır.
 
 CSV'ler bir **indeks**: `file, channel, event, window_start, window_end`.
 `file` sütunu ana veri setine mutlak yol veriyor.
+
+### ⭐ Benchmark verisi: kopyalar KIRPILMIŞ, ham dosyalar tam
+
+`/tf/segment/Fence Benchmark Data/` altındaki 17 `.hdf5` **olay
+çevresine kırpılmış** — record_26'da 201 kanaldan yalnızca 11'i (71–97).
+Saha waterfall'ında yanlış alarm üreten kanallar tam da eksik olanlar.
+
+Ham karşılıkları bulundu (12/17):
+
+```
+/tf/rawData/2026_newdata/IGA_RECORDS/            <- 7 .bin  (fs 2000)
+/tf/rawData/2026_newdata/GOSB/                   <- 2 .sdf
+/tf/rawData/2026_newdata/Turk_Telekom_Umitkoy/ttdata/  <- 3 .sdf
+```
+
+**Ham `.bin` formatı çözüldü ve doğrulandı** (2026-09-02):
+
+```
+baslik  16.384 bayt, atlanir
+govde   uint16 little-endian, ZAMAN-oncelikli (ornek, kanal)
+deger   genlik -- hypot UYGULANMAZ (egitim verisinden farkli!)
+```
+
+Doğrulama: `.hdf5` kopyasındaki kanal 71–74 ile **maks fark 0**.
+Okuyucu: `src/ham_bin.py`. Kanal-öncelikli diziliş denendi, tutmadı.
+
+⚠️ Eğitim `.bin.hdf5`'i **karmaşık** (`re`,`im` → `hypot`), benchmark ham
+dosyaları **gerçek uint16** — zaten genlik.
 
 ### Ölçek
 
