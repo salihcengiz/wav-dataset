@@ -415,6 +415,46 @@ esik   KACIRMA   Y.ALARM
 Önceki ölçüm (53 pencere, kırpılmış kanallar) yanlış alarmı **%0.0**
 gösteriyordu. Gerçek sayı **%3.2**.
 
+### ✅ SONUÇ ÖLÇÜLDÜ — eğri aşağı-sola kaydı
+
+Aynı 8.040 pencerede iki model yan yana (`ham_analiz.py`, tek geçiş):
+
+| eşik | bastırmasız kaçırma | bastırmasız y.alarm | **bastırmalı kaçırma** | **bastırmalı y.alarm** |
+|---|---|---|---|---|
+| 0.50 | 24.6% | 8.5% | **27.2%** | **2.0%** |
+| 0.75 | 34.2% | 4.2% | **35.7%** | **0.8%** |
+| 0.90 | 39.7% | 3.2% | **41.2%** | **0.5%** |
+| 1.10 | 45.6% | 1.9% | **45.6%** | **0.3%** |
+
+**Aynı eşikte (0.90):** kaçırma +1.5 puan, yanlış alarm −2.6 puan.
+Kaldırılan her 1 puan yanlış alarm başına **0.56 puan** kaçırma bedeli.
+
+**Ama asıl kazanç eğrinin kendisinde:**
+
+```
+bugunku (bastirmasiz @ 0.90)  ->  kacirma 39.7%   y.alarm 3.2%
+bastirmali @ 0.50             ->  kacirma 27.2%   y.alarm 2.0%
+                                  HER IKI EKSENDE DE DAHA IYI
+```
+
+Bastırma sadece takas yapmadı, **eğriyi aşağı-sola kaydırdı** — sınıf
+ağırlığı / yeniden eğitim tartışırken hedeflenen kayma, tek bir ölçüt
+düzeltmesiyle geldi. Eşik 1.10'da bastırma tamamen **bedava** (kaçırma
+iki modelde de %45.6, yanlış alarm 1.9% → 0.3%).
+
+**🔒 Önerilen çalışma noktası: bastırmalı model + eşik 0.75.**
+Bugünküne göre kaçırma −4.0, yanlış alarm −2.4 puan.
+
+⚠️ Çekince: GT-içi örneklem **272 pencere**, 7 dosyadan. Yanlış alarm
+tarafı sağlam (7.768 pencere) ama kaçırma tahmini gürültülü olabilir.
+
+### Saha doğrulaması (waterfall, record_26)
+
+Bastırmalı model yüklenip aynı test tekrarlandı:
+**kanal 0, 4, 5, 63, 64 sütunlarının hepsi kayboldu.** Kalan yanlış alarm
+birkaç izole hücre (ch ~57, ~104, ~195). Gerçek olay kutusu (ch 90–97)
+tespit edilmeye devam ediyor.
+
 ⚠️ **Bedeli:** `noise` artık iki şeyi temsil ediyor — etiketlenmiş
 gürültü olayı **ve** boş pencere. Ayırmak isteyen `bosluk_orani`'na
 bakabilir, değer hâlâ ikinci çıktı olarak veriliyor.
