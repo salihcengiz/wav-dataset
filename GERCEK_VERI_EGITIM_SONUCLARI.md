@@ -480,6 +480,49 @@ yapıldı ve düzeltildi.
 ⚠️ record_26, waterfall'da "weak climbing" kutusunun boş çıktığı dosya.
 %72.7 kaçırma bununla tutarlı.
 
+### 🔑 DÖRT MODEL YAN YANA — BiLSTM'e dönülüyor (2026-09-02)
+
+Aynı 8.040 pencerede, dört yapılandırma:
+
+| model | eşik | kaçırma | y.alarm |
+|---|---|---|---|
+| kosu3 (SK gri) | 0.90 | %39.3 | %3.2 |
+| kosu3+bas | 0.90 | %40.8 | **%0.5** |
+| **kosu4 (BiLSTM viridis)** | 0.90 | %29.8 | **%55.5** |
+| **kosu4+bas** | **0.90** | **%31.2** | %1.4 |
+
+**Bastırmasız BiLSTM sahada felaket: yanlış alarm %55.5.** Olay olmayan
+pencerelerin yarısından fazlası alarm üretiyor — ve yedi dosyanın
+**hepsinde** ~%55, yani tekdüze ve dejenere. Boş pencere testindeki
+%99.7'nin saha karşılığı bu. Viridis bulgusu bağımsız olarak doğrulandı.
+
+**Bastırma onu 40 kat toparlıyor** (%55.5 → %1.4) ve o hâliyle SK'yi
+kaçırmada **9.6 puan** geçiyor (%31.2 vs %40.8), bedeli 0.9 puan yanlış
+alarm. Çevre güvenliğinde kaçırma daha pahalı olduğu için takas lehte.
+
+**Dosya bazında tutarlı** — BiLSTM 7 dosyanın 6'sında daha az kaçırıyor:
+
+| dosya | kosu3+bas | kosu4+bas |
+|---|---|---|
+| record_49 | %23.3 | **%10.0** |
+| record_53 | %31.2 | **%18.8** |
+| record_48 | %27.5 | **%20.0** |
+| record_51 | %32.5 | **%25.0** |
+| record_50 | %30.3 | **%27.3** |
+| record_52 | %45.0 | **%37.5** |
+| record_26 | %73.7 | %73.7 |
+
+**🔒 KARAR: kosu4 + bastırma ile devam.**
+
+⚠️ **İki açık nokta:**
+
+1. **record_26 her iki modelde de %73.7.** Model sorunu değil, o kayda
+   özgü. Kaçırma incelemesinin başlangıç noktası.
+2. **Bastırma viridis'i TAM kurtarmıyor.** BiLSTM'in yanlış alarmı
+   (%1.4) hâlâ SK'nin (%0.5) üç katı — zararın bir kısmı bastırmanın
+   yakalamadığı yerde. → **Koşu 7 (BiLSTM + gri) artık çok daha
+   değerli:** BiLSTM'in kaçırma üstünlüğü + gri'nin boşluk sağlamlığı.
+
 ### Saha doğrulaması (waterfall, record_26)
 
 Bastırmalı model yüklenip aynı test tekrarlandı:

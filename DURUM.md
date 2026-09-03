@@ -430,12 +430,14 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | ~~1~~ | ✅ ~~Teslim paketini koşu 4'e güncelle~~ | **Kod hazır** (`MIMARILER`, iki mimari de yerelde test edildi). Sunucuda `python gercek_export.py --kosu 4` çalıştırılmalı |
 | ~~2~~ | ~~`gercek_rapor.py`'yi beş koşuyla çalıştır~~ | **Ertelendi** (2026-09-01) — böyle bir rapor şu an sorumludan beklenmiyor |
 | ~~3~~ | ✅ ~~ONNX kullanım kartını üret~~ | **Yapıldı.** `paket/bilstm_kosu4_KULLANIM.md`, performans tablosu dahil tam. İki küçük eksiği için sonuç belgesi Bölüm 10 |
-| ~~A~~ | ✅ ~~Gri+SK ONNX'e çevir~~ | Yapıldı. `sk_gri_kosu3_v2.onnx` (bastırmalı) teslim edildi |
-| ~~B~~ | ✅ ~~`bosluk_orani` filtresi uygulanıyor mu~~ | Gerekmiyor — filtre grafiğe gömüldü, çağıranda değişiklik yok |
-| **C** | **Eşiği 0.75'e indirmesini sorumluya öner** | Ölçüldü: 0.90'a göre hem kaçırma hem yanlış alarm daha iyi |
-| **D** | **`record_52`'de doğrulamayı tekrarla** | Bastırma tek dosyada (record_26) doğrulandı. record_52 en kötü ikinci (%43.8 kaçırma) |
-| **E** | **Aynı düzeltmeyi BiLSTM'e uygula** | Koşu 4 viridis, boşlukta %99.7 yanlış alarm veriyordu. Bastırma onu ne kadar toparlıyor? |
-| **F** | **KAÇIRMA — %35.7** | Sıradaki asıl sorun. Çevre güvenliğinde kaçırılan ihlal, fazladan alarmdan pahalı. Dosya bazında %16.7–%72.7 arası değişiyor |
+| ~~A~~ | ✅ ~~Gri+SK ONNX'e çevir~~ | Yapıldı, teslim edildi |
+| ~~B~~ | ✅ ~~`bosluk_orani` filtresi uygulanıyor mu~~ | Gerekmiyor — filtre grafiğe gömüldü |
+| ~~D~~ | ✅ ~~`record_52`'de tekrarla~~ | Yapıldı — 7 dosyanın hepsinde dosya bazında döküm çıkarıldı |
+| ~~E~~ | ✅ ~~BiLSTM'e de uygula~~ | Yapıldı. Bastırmasız %55.5 → bastırmalı %1.4 yanlış alarm |
+| **A2** | **BiLSTM'i ONNX'e çevir ve teslim et** | Karar: koşu 4 + bastırma ile devam. Kaçırmada SK'den 9.6 puan iyi |
+| **C** | Sorumluya eşik önerisi | BiLSTM+bastırma ile eğri yeniden çizilmeli; 0.90 iyi bir nokta görünüyor (%31.2 / %1.4) |
+| **F** | **KAÇIRMA — %31.2** | Sıradaki asıl sorun. Başlangıç noktası **record_26**: her iki modelde de %73.7, yani modele özgü değil, o kayda özgü |
+| **G** | **Koşu 7: BiLSTM + GRİ** | Değeri arttı. Bastırma viridis'i tam kurtarmıyor (BiLSTM y.alarm %1.4, SK %0.5). Gri BiLSTM ikisinin en iyisini verebilir |
 | **D** | **Koşu 7: BiLSTM + GRİ** | Hiç denenmedi. Koşu 4 viridis'ti. BiLSTM'in +0.065 kazancı mimariden geliyorsa, gri BiLSTM hem yüksek doğruluk hem boşluk sağlamlığı verir. **En değerli sıradaki koşu** |
 | 4 | Koşu 6: geniş SK + yeni rejim | `CONV_CHANNELS=(32,64,128)`. Kazanç kapasiteden mi zamandan mı |
 | 5 | Sorumluya özet | Beş koşu, en iyi model, ONNX teslimi |
