@@ -329,6 +329,92 @@ değişiklik gerekmiyor. Dosyayı değiştirip göndermek yeterli.
 `-1e4` ile `-1e4`'ü karşılaştırıp **asla başarısız olamayacak** hâle
 gelirdi. Artık yapılı sinyal kullanılıyor (`bosluk ≈ 0.12`).
 
+### 🔑 BASTIRMA SAHADA TETİKLENMEDİ — iki kusur bulundu (2026-09-02)
+
+Bastırma laboratuvarda çalışıyordu ama waterfall'da kanal 0 hâlâ 30
+saniye kesintisiz `cutting` veriyordu. Detailed Test: logitler
+`+1.000 / −0.852 / −0.684`, yani `-1e4` yok — **tetiklenmemiş**.
+
+Ham `.bin` formatı çözülüp 201 kanalın hepsi okununca sebep ölçüldü
+(`src/ham_analiz.py`, 8.040 pencere). **Yanlış alarm 5 kanalda toplanmış**
+(201'in 153'ü hiç alarm üretmiyor):
+
+| kanal | alarm% | tutarlı% | baskın | `bosluk` | `dusuk_frek` | MAD |
+|---|---|---|---|---|---|---|
+| 5 | 100.0 | 100.0 | climbing | **0.007** | 0.957 | 829.5 |
+| 0 | 100.0 | 100.0 | cutting | **1.000** | 1.000 | **0.0** |
+| 4 | 92.5 | 100.0 | climbing | **0.014** | 0.931 | 404.1 |
+| 63 | 62.5 | 87.5 | cutting | **0.011** | 0.952 | 689.6 |
+| 64 | 32.5 | 82.5 | cutting | **0.012** | 0.941 | 677.6 |
+
+**Kusur 1 — sıfır güç, iki uygulamada zıt sonuç.**
+Kanal 0'ın MAD'i tam **0**, yani sinyal sabit. Normalizasyon
+`(x−medyan)/(0+1e-9) = 0` veriyor, STFT'si sıfır.
+
+```python
+real_data.bosluk_orani :  if top <= 0: return 1.0    # BOS  ✓
+bosluk_orani_stft      :  0 / 1e-12 = 0.0            # DOLU ✗
+```
+
+Tek satır. `torch.where(top > 1e-12, oran, 1.0)` ile numpy'la
+hizalandı — `Where` opset 9'dan beri var, 13'te sorunsuz.
+
+**Kusur 2 — ölçüt diğer dört kanalda TERS çalışıyor.**
+`bosluk_orani` = 500 Hz **üstündeki** pay. Ölü/zayıf kanalda yüksek
+frekans yok, yavaş taban kayması var → oran **0.007–0.014**, yani
+tablodaki en düşük değerler. Ölçüt onları "en dolu" pencereler sayıyor.
+
+Çözüm: **100 Hz altındaki pay** ikinci ölçüt olarak eklendi.
+
+| ölçüt | artefakt | gerçek olay | eşik | **elenen** |
+|---|---|---|---|---|
+| **`dusuk_frek`** | 0.956 | 0.655 | 0.9084 | **%92.5** |
+| `bosluk_orani` | 0.209 | 0.105 | 0.2506 | %20.0 |
+| `mad` | 520 | 400 | 266 | %20.5 |
+| `std` | 778 | 594 | 398 | %20.0 |
+
+Gerçek olayların %95'i korunurken artefakt pencerelerinin **%92.5'i**
+susturuluyor. Bastırma koşulu artık:
+
+```
+bosluk_orani > 0.45   VEYA   dusuk_frek > 0.9084
+```
+
+⚠️ Bu ölçüt daha önce "işe yaramaz" görünmüştü — çünkü kırpılmış
+kanallarda ölçülmüştü ve orada model **zaten doğruydu**. Gerçek
+popülasyonda tablo tersine döndü. **Yanlış popülasyonda ölçüm yapmak,
+ölçüm yapmamaktan daha yanıltıcı.**
+
+**Doğrulama üç durumda birden** (`bastirma_dogrula` + ONNX içinde):
+
+| durum | `bosluk` | `dusuk_frek` | sonuç |
+|---|---|---|---|
+| düz gürültü | 0.507 | 0.103 | bastırıldı |
+| **ölü kanal** (sabit) | **1.000** | 1.000 | bastırıldı |
+| **sürüklenme** | **0.0002** | **0.9997** | bastırıldı |
+| yapılı sinyal | 0.124 | 0.026 | dokunulmadı |
+
+Sürüklenme satırı kritik: `bosluk_orani` 0.0002, yani **eski ölçüt
+tamamen kördü**.
+
+⚠️ Test sinyali `ornek_sinyal` de değişti: eskiden 20–185 Hz idi, yani
+enerjisi tamamen 100 Hz altındaydı ve **yeni ölçüt onu bastırırdı** —
+"yapılı sinyale dokunulmuyor" kontrolü asla geçemezdi. Artık 120–450 Hz.
+
+### Gerçek takas eğrisi (201 kanal, 7.768 GT-dışı pencere)
+
+```
+esik   KACIRMA   Y.ALARM
+0.00    15.4%     62.0%
+0.50    24.6%      8.5%
+0.75    34.2%      4.2%
+0.90    39.7%      3.2%   <- arayuzun calisma noktasi
+1.50    54.8%      1.2%
+```
+
+Önceki ölçüm (53 pencere, kırpılmış kanallar) yanlış alarmı **%0.0**
+gösteriyordu. Gerçek sayı **%3.2**.
+
 ⚠️ **Bedeli:** `noise` artık iki şeyi temsil ediyor — etiketlenmiş
 gürültü olayı **ve** boş pencere. Ayırmak isteyen `bosluk_orani`'na
 bakabilir, değer hâlâ ikinci çıktı olarak veriliyor.

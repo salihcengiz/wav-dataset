@@ -170,7 +170,8 @@ class OnIslemeliModel(nn.Module):
                  hop=rd.HOP, top_db=rd.TOP_DB, bos_frekans=rd.BOS_FREKANS,
                  girdi=(GIRDI_H, GIRDI_W), renk="viridis",
                  siniflar=("cutting", "climbing", "noise"),
-                 bos_bastir=True, bos_esik=rd.BOS_ESIK):
+                 bos_bastir=True, bos_esik=rd.BOS_ESIK,
+                 dusuk_frekans=100.0, dusuk_esik=0.9084):
         super().__init__()
         self.model = model
         self.pencere, self.fs = pencere, fs
@@ -231,6 +232,23 @@ class OnIslemeliModel(nn.Module):
         self.register_buffer("yuksek_maske",
                              (stft_frek >= bos_frekans).float().view(1, -1, 1))
 
+        # --- DUSUK FREKANS MASKESI (ikinci bosluk olcutu) ---
+        #
+        # OLCULDU (src/ham_analiz.py, 201 kanalin hepsinde): waterfall'da
+        # yanlis alarm ureten 5 kanalin (0, 4, 5, 63, 64) dordunde
+        # bosluk_orani 0.007-0.014 cikiyor -- yani olcut onlari "en dolu"
+        # pencereler sayiyor, TAM TERSI. Cunku olu bir kanalda yuksek
+        # frekans yoktur, yavas bir taban kaymasi vardir.
+        #
+        # 100 Hz ALTINDAKI enerji payi ise ayiriyor:
+        #     artefakt 0.956   gercek olay 0.655
+        # Gercek olaylarin %95'ini koruyan esikte (0.9084) artefakt
+        # pencerelerinin %92.5'i susturuluyor. bosluk_orani ayni testte
+        # %20.0'da kaliyor.
+        self.dusuk_esik = float(dusuk_esik)
+        self.register_buffer("dusuk_maske",
+                             (stft_frek < dusuk_frekans).float().view(1, -1, 1))
+
         # --- viridis LUT (256 x 3) ---
         self.register_buffer("lut", torch.from_numpy(
             viridis_lut().astype(np.int64)))
@@ -275,9 +293,38 @@ class OnIslemeliModel(nn.Module):
         return torch.sqrt(re * re + im * im).transpose(1, 2)  # (B,K,T)
 
     def bosluk_orani_stft(self, S):
-        """500 Hz ustundeki guc payi -- STFT binlerinden kestirim."""
+        """
+        500 Hz ustundeki guc payi -- STFT binlerinden kestirim.
+
+        ⚠ SIFIR GUC KORUMASI. Sabit bir sinyal (olu kanal) normalizasyondan
+        (x - medyan)/(0 + 1e-9) = 0 diye geciyor; STFT'si de sifir. Bu
+        durumda eski surum 0/1e-12 = 0.0 donduruyordu, yani pencereyi
+        "dolu" sayiyordu -- oysa real_data.bosluk_orani ayni durumda
+        1.0 (=BOS) donduruyor.
+
+        Saha etkisi olculdu: benchmark kanal 0'in MAD'i tam 0, numpy
+        1.000 diyor, ONNX 0.0 diyordu. Bastirma bu yuzden tetiklenmedi ve
+        waterfall'da 30 saniyelik kesintisiz `cutting` sutunu cikti.
+        Simdi numpy ile ayni: guc yoksa 1.0.
+        """
         G = S * S
-        return (G * self.yuksek_maske).sum((1, 2)) / G.sum((1, 2)).clamp_min(1e-12)
+        top = G.sum((1, 2))
+        oran = (G * self.yuksek_maske).sum((1, 2)) / top.clamp_min(1e-12)
+        return torch.where(top > 1e-12, oran, torch.ones_like(oran))
+
+    def dusuk_frekans_payi(self, S):
+        """
+        100 Hz ALTINDAKI guc payi -- ikinci bosluk olcutu.
+
+        Olu/zayif kanallarda enerji tamamen taban kaymasinda toplaniyor;
+        bosluk_orani (yuksek frekans payi) bu durumda DUSUK cikiyor ve
+        pencereyi dolu sayiyor. Bu buyukluk tersini olcuyor ve artefakt
+        kanallarini gercek olaylardan ayiriyor (0.956 vs 0.655).
+        """
+        G = S * S
+        top = G.sum((1, 2))
+        oran = (G * self.dusuk_maske).sum((1, 2)) / top.clamp_min(1e-12)
+        return torch.where(top > 1e-12, oran, torch.ones_like(oran))
 
     def db_cevir(self, S):
         """real_data.spektrogram'in dB adimi: ref=max, -top_db'de kirp."""
@@ -321,8 +368,14 @@ class OnIslemeliModel(nn.Module):
         logit = self.model(self.goruntu(self.db_cevir(S)))
 
         if self.bos_bastir:
-            # (B,1): pencere gecerliyse 1.0, bossa 0.0
-            gecerli = (bosluk <= self.bos_esik).to(logit.dtype).unsqueeze(1)
+            # IKI OLCUT, VEYA ile:
+            #   bosluk_orani > 0.45   -> spektrum duz (beyaz gurultu benzeri)
+            #   dusuk_frek  > 0.9084  -> enerji taban kaymasinda (olu kanal)
+            # Ikincisi olculerek eklendi: artefakt kanallarinin dordunde
+            # bosluk_orani 0.007-0.014 cikiyor ve onlari yakalayamiyor.
+            dusuk = self.dusuk_frekans_payi(S)
+            gecerli = ((bosluk <= self.bos_esik) &
+                       (dusuk <= self.dusuk_esik)).to(logit.dtype).unsqueeze(1)
             logit = logit - (1.0 - gecerli) * self.bastir_maske * self.BASTIRMA
         return logit, bosluk
 
@@ -390,17 +443,24 @@ def ornek_sinyal(n=2, tohum=0):
     Yapili sinyalde bosluk ~0.12, bastirma kapali kalir, logitler
     gercekten karsilastirilir.
 
-    FREKANS BANTLA SINIRLI: 20 + 15*(i % 12) -> 20..185 Hz. Dogrudan
-    20 + 15*i kullanilirsa batch 64'te 965 Hz'e cikiyor; sinyal abs()
-    alindigi icin harmonikler Nyquist'in (1000 Hz) ustune tasip
-    katlaniyor ve PyTorch/ONNX farki 1e-3 esigine dayaniyor (olculdu:
-    9.77e-04). Bu sahte bir basarisizlik uretir ya da gercek bir
-    bozulmayi maskeler. Modu ile bant icinde tutuluyor.
+    FREKANS BANDI 120-450 Hz: 120 + 30*(i % 12). Iki kisit birden:
+
+      ust sinir  -- 20 + 15*i gibi artan bir dizi batch 64'te 965 Hz'e
+                    cikiyordu; abs() harmonikleri Nyquist'in (1000 Hz)
+                    ustune tasip katlaniyor ve PyTorch/ONNX farki 1e-3
+                    esigine dayaniyordu (olculdu: 9.77e-04).
+      alt sinir  -- eski 20 Hz'lik sinyalin enerjisi TAMAMEN 100 Hz'in
+                    altindaydi, yani DUSUK FREKANS OLCUTU onu bos sayip
+                    bastirirdi. O zaman "yapili sinyale dokunulmuyor"
+                    kontrolu asla gecemezdi.
+
+    120-450 Hz gercek olaylara benziyor: dusuk_frek ~0.1 (olaylarda
+    0.65), bosluk_orani ~0.12 (esik 0.45).
     """
     rng = np.random.default_rng(tohum)
     t = np.arange(rd.PENCERE) / rd.FS
     return np.stack([
-        np.abs(3 + np.sin(2 * np.pi * (20 + 15 * (i % 12)) * t)
+        np.abs(3 + np.sin(2 * np.pi * (120 + 30 * (i % 12)) * t)
                + 0.4 * rng.normal(0, 1, rd.PENCERE)) for i in range(n)
     ]).astype(np.float32)
 
@@ -551,22 +611,38 @@ def disa_aktar(sarmal, cikti, opset=13, dogrula=True):
         # fark edilmezdi. O yuzden ONNX'e ayrica BOS bir pencere
         # veriliyor.
         if sarmal.bos_bastir:
+            # UC AYRI YOL sinaniyor, cunku her biri farkli grafik
+            # dugumlerinden geciyor:
+            #   duz gurultu -> yuksek_maske dali
+            #   olu kanal   -> torch.where SIFIR GUC korumasi (yeni)
+            #   suruklenme  -> dusuk_maske dali (yeni)
+            # Yalnizca duz gurultu sinansaydi, yeni iki yolun ihracatta
+            # sabitlenip sessizce devre disi kalmasini goremezdik.
             rng = np.random.default_rng(11)
-            duz = np.abs(rng.normal(0, 1, (2, rd.PENCERE))).astype(np.float32)
-            o_lg, o_bo = oturum.run(None, {"sinyal": duz})
+            t = np.arange(rd.PENCERE) / rd.FS
+            durumlar = {
+                "duz gurultu": np.abs(
+                    rng.normal(0, 1, (2, rd.PENCERE))).astype(np.float32),
+                "olu kanal": np.full((2, rd.PENCERE), 900.0, dtype=np.float32),
+                "suruklenme": np.stack([
+                    np.abs(1000 + 300 * np.sin(2 * np.pi * (1.0 + 0.5 * i) * t)
+                           + 5 * rng.normal(0, 1, rd.PENCERE))
+                    for i in range(2)]).astype(np.float32),
+            }
             noise_idx = sarmal.siniflar.index("noise")
-            tahmin = o_lg.argmax(1)
             print(f"\n  Bastirma ONNX icinde:")
-            print(f"    bosluk {np.round(o_bo, 3).tolist()}  ->  "
-                  f"{[sarmal.siniflar[t] for t in tahmin]}   "
-                  f"logit[0] {np.round(o_lg[0], 1).tolist()}")
-            assert (o_bo > sarmal.bos_esik).all(), \
-                f"test sinyali bos cikmadi ({o_bo}) -- bastirma sinanamadi"
-            assert (tahmin == noise_idx).all(), (
-                "BASTIRMA ONNX'E GECMEMIS: bos pencerede argmax "
-                f"{[sarmal.siniflar[t] for t in tahmin]}. Muhtemelen "
-                "constant folding gecerlilik bayragini sabitledi.")
-            print(f"    [x] ONNX de bastiriyor -- grafik sabitlenmemis")
+            for ad, x in durumlar.items():
+                o_lg, o_bo = oturum.run(None, {"sinyal": x})
+                tahmin = o_lg.argmax(1)
+                print(f"    {ad:<12s} bosluk {np.round(o_bo, 3).tolist()}  ->  "
+                      f"{[sarmal.siniflar[t] for t in tahmin]}   "
+                      f"logit[0] {np.round(o_lg[0], 1).tolist()}")
+                assert (tahmin == noise_idx).all(), (
+                    f"BASTIRMA ONNX'E GECMEMIS ('{ad}'): argmax "
+                    f"{[sarmal.siniflar[t] for t in tahmin]}, 'noise' "
+                    f"bekleniyordu. Muhtemelen constant folding gecerlilik "
+                    f"bayragini sabitledi.")
+            print(f"    [x] Uc yol da ONNX'te bastiriyor")
     return cikti, d_logit
 
 
@@ -590,40 +666,63 @@ def bastirma_dogrula(sarmal, tohum=7):
         return None
 
     rng = np.random.default_rng(tohum)
+    t = np.arange(rd.PENCERE) / rd.FS
+
+    # Uc bastirilmasi GEREKEN durum + bir bastirilmamasi gereken.
+    # Ikisi SAHADAN geliyor (src/ham_analiz.py, benchmark kanallari):
+    #   olu kanal      -> benchmark kanal 0, MAD tam 0, bosluk 1.000
+    #   suruklenme     -> kanal 4/5/63/64, bosluk 0.007-0.014 (!),
+    #                     dusuk_frek 0.93-0.96
     duz = np.abs(rng.normal(0, 1, (3, rd.PENCERE))).astype(np.float32)
+    olu = np.full((3, rd.PENCERE), 900.0, dtype=np.float32)
+    suruklenme = np.stack([
+        np.abs(1000 + 300 * np.sin(2 * np.pi * (1.0 + 0.5 * i) * t)
+               + 5 * rng.normal(0, 1, rd.PENCERE)) for i in range(3)
+    ]).astype(np.float32)
     yapili = ornek_sinyal(3, tohum)
     noise_idx = sarmal.siniflar.index("noise")
 
     sonuc = {}
     for ad, x, bos_bekleniyor in (("duz gurultu", duz, True),
+                                  ("OLU KANAL (sabit)", olu, True),
+                                  ("SURUKLENME (dusuk frek)", suruklenme, True),
                                   ("yapili sinyal", yapili, False)):
+        xt = torch.from_numpy(x)
         with torch.no_grad():
-            logit, bosluk = sarmal(torch.from_numpy(x))
+            logit, bosluk = sarmal(xt)
+            S = sarmal.stft_genlik(sarmal.normalize(xt))
+            dusuk = sarmal.dusuk_frekans_payi(S).numpy()
         lg, bo = logit.numpy(), bosluk.numpy()
         tahmin = lg.argmax(1)
         print(f"\n  {ad}:")
         print(f"    bosluk_orani : {np.round(bo, 4).tolist()}  "
               f"(esik {sarmal.bos_esik})")
+        print(f"    dusuk_frek   : {np.round(dusuk, 4).tolist()}  "
+              f"(esik {sarmal.dusuk_esik})")
         print(f"    tahmin       : "
               f"{[sarmal.siniflar[t] for t in tahmin]}")
         print(f"    logit[0]     : {np.round(lg[0], 3).tolist()}")
 
-        gercekten_bos = bo > sarmal.bos_esik
+        # Bastirma IKI olcutten biriyle tetikleniyor
+        gercekten_bos = (bo > sarmal.bos_esik) | (dusuk > sarmal.dusuk_esik)
         if bos_bekleniyor:
             assert gercekten_bos.all(), (
-                f"duz gurultunun bosluk_orani esigi asmadi: {bo} -- "
-                f"test sinyali yeterince duz degil, bastirma sinanamadi")
+                f"'{ad}' hicbir olcutu tetiklemedi: bosluk {bo}, "
+                f"dusuk_frek {dusuk} -- test sinyali temsili degil, "
+                f"bastirma sinanamadi")
             assert (tahmin == noise_idx).all(), (
-                f"BASTIRMA CALISMIYOR: bos pencerede argmax "
+                f"BASTIRMA CALISMIYOR: '{ad}' penceresinde argmax "
                 f"{[sarmal.siniflar[t] for t in tahmin]}, 'noise' bekleniyordu")
             print(f"    [x] Bastirildi -> argmax 'noise'")
         else:
             assert not gercekten_bos.any(), (
-                f"yapili sinyal bos sayildi: {bo} -- esik cok dusuk?")
+                f"yapili sinyal bos sayildi: bosluk {bo}, dusuk_frek "
+                f"{dusuk} -- esikler cok dusuk ya da test sinyali uygun degil")
             assert lg.max() < 100, (
                 f"yapili sinyalde bastirma tetiklendi: {lg}")
             print(f"    [x] Dokunulmadi -- logitler normal aralikta")
-        sonuc[ad] = (bo.tolist(), [sarmal.siniflar[t] for t in tahmin])
+        sonuc[ad] = (bo.tolist(), dusuk.tolist(),
+                     [sarmal.siniflar[t] for t in tahmin])
     print(f"\n  [x] Bastirma her iki yonde de dogru davraniyor")
     return sonuc
 
