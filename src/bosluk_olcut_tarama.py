@@ -148,6 +148,7 @@ def topla(dizin, adim, sarmal=None, cihaz="cpu"):
                     o["gt"] = gt_icinde(bas, son, kanal, kutular)
                     o["kanal"] = kanal
                     o["bas"] = bas
+                    o["dosya"] = os.path.basename(yol)
                     o["_ham"] = s.astype(np.float32)
                     kayitlar.append(o)
     return kayitlar
@@ -221,6 +222,82 @@ def rapor(kayitlar, koruma=0.95):
         if mevcut:
             print(f"  MEVCUT: bosluk_orani -> %{100*mevcut[0][0]:.1f}")
     return sonuc
+
+
+def _alarm(kayitlar, esik):
+    """
+    Bir pencere ALARM uretir mi?
+
+    Alarm = saldiri sinifi (cutting/climbing) VE logit esigi asiyor.
+    `noise` esigi assa bile alarm degildir -- operasyonel olarak
+    "alarm yok" demektir. Bu tanim onemli: GT icindeki bir pencereye
+    yuksek guvenle `noise` denmesi de KACIRMADIR.
+    """
+    return np.array([(k["tahmin"] in ("cutting", "climbing"))
+                     and (k["logit"] > esik) for k in kayitlar])
+
+
+def dosya_raporu(kayitlar, esik=0.9):
+    """
+    DOSYA BAZINDA kacirma ve yanlis alarm.
+
+    Toplam %39.3 kacirma tek bir ORTALAMA. Dosyadan dosyaya degisiyor mu
+    diye bakmadan "bu takasi yapacak butcemiz yok" demek olcum degil
+    iddia olur. Bu tablo onu olcuye ceviriyor.
+    """
+    if "tahmin" not in kayitlar[0]:
+        return
+    print("\n" + "=" * 78)
+    print(f"DOSYA BAZINDA  (esik {esik})")
+    print("=" * 78)
+    print(f"  {'dosya':<34s} {'GT-ici':>7s} {'KACIRMA':>9s} "
+          f"{'GT-disi':>8s} {'Y.ALARM':>9s}")
+    print("  " + "-" * 72)
+    for d in sorted({k["dosya"] for k in kayitlar}):
+        g = [k for k in kayitlar if k["dosya"] == d]
+        ici = [k for k in g if k["gt"]]
+        disi = [k for k in g if not k["gt"]]
+        kac = (1 - _alarm(ici, esik).mean()) if ici else float("nan")
+        ya = _alarm(disi, esik).mean() if disi else float("nan")
+        print(f"  {d[:34]:<34s} {len(ici):>7} {100*kac:>8.1f}% "
+              f"{len(disi):>8} {100*ya:>8.1f}%")
+    ici = [k for k in kayitlar if k["gt"]]
+    disi = [k for k in kayitlar if not k["gt"]]
+    print("  " + "-" * 72)
+    print(f"  {'TOPLAM':<34s} {len(ici):>7} "
+          f"{100*(1-_alarm(ici, esik).mean()):>8.1f}% "
+          f"{len(disi):>8} {100*_alarm(disi, esik).mean():>8.1f}%")
+
+
+def esik_egrisi(kayitlar, esikler=(0.0, 0.25, 0.5, 0.75, 0.9, 1.1,
+                                   1.3, 1.5, 1.75, 2.0)):
+    """
+    Esik <-> (kacirma, yanlis alarm) egrisi.
+
+    Kacirma tek bir sayi degil, CALISMA NOKTASININ fonksiyonu. Esigi
+    dusurunce kacirma duser, yanlis alarm artar. Bir mudahaleyi (sinif
+    agirligi, kosinus kafa...) degerlendirmenin dogru yolu tek noktaya
+    degil bu egriye bakmak: iyi bir mudahale egriyi ASAGI-SOLA kaydirir.
+    """
+    if "tahmin" not in kayitlar[0]:
+        return
+    ici = [k for k in kayitlar if k["gt"]]
+    disi = [k for k in kayitlar if not k["gt"]]
+    if not ici or not disi:
+        return
+    print("\n" + "=" * 78)
+    print("ESIK EGRISI -- kacirma ile yanlis alarm arasindaki takas")
+    print("=" * 78)
+    print(f"  {'esik':>6} {'KACIRMA':>9} {'Y.ALARM':>9}   "
+          f"{'(GT-ici ' + str(len(ici)) + ', GT-disi ' + str(len(disi)) + ')'}")
+    print("  " + "-" * 40)
+    for e in esikler:
+        kac = 1 - _alarm(ici, e).mean()
+        ya = _alarm(disi, e).mean()
+        cubuk = "#" * int(round(40 * ya))
+        print(f"  {e:>6.2f} {100*kac:>8.1f}% {100*ya:>8.1f}%   {cubuk}")
+    print("\n  Iyi bir mudahale bu egriyi ASAGI-SOLA kaydirir:")
+    print("  ayni kacirmada daha az yanlis alarm, ya da tersi.")
 
 
 def kanal_raporu(kayitlar, esik=0.9):
@@ -334,5 +411,7 @@ if __name__ == "__main__":
         print(f"  checkpoint yok ({a.ckpt}) -- yalnizca olcutler")
 
     rapor(kayitlar, a.koruma)
+    dosya_raporu(kayitlar)
+    esik_egrisi(kayitlar)
     kanal_raporu(kayitlar)
     kacirma_raporu(kayitlar)
