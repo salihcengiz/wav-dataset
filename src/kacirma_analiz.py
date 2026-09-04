@@ -71,13 +71,49 @@ def gt_kutulari(kopya_yol):
                 for r in f["labels"][:]]
 
 
-def kapsayan_kutu(bas, son, kanal, kutular):
-    """Pencereyi iceren ILK GT kutusu, yoksa None."""
-    for k in kutular:
-        ob, os_, kb, ks = k
-        if bas < os_ and son > ob and kb <= kanal <= ks:
-            return k
-    return None
+def gt_gruplari(kutular, kanal_bosluk=2):
+    """
+    Tek kanalli GT etiketlerini FIZIKSEL OLAYLARA gruplar.
+
+    ⚠ `labels` her satirda TEK kanal veriyor (kanal_bas == kanal_son).
+    Waterfall'da cok kanalli gorunen kutular aslinda yan yana cizilmis
+    AYRI etiketler. Bu fark edilmeden yazilan ilk surumde "kutu icinde
+    kanal konumu" hep 0 cikti ve tum pencereler tek dilime dustu --
+    analiz sessizce anlamsizdi.
+
+    Bir olayin kanal KENARINDA mi MERKEZINDE mi oldugunu sorabilmek icin
+    once gruplamak gerekiyor.
+
+    Kural: zaman araliklari ORTUSEN ve kanallari en fazla `kanal_bosluk`
+    uzaklikta olan etiketler ayni gruba girer. Zincirleme birlesmeler
+    icin kararli hale gelene kadar tekrarlaniyor.
+    """
+    gruplar = []
+    for ob, os_, kb, ks in sorted(kutular, key=lambda r: (r[2], r[0])):
+        gruplar.append({"bas": ob, "son": os_, "kanal_bas": kb,
+                        "kanal_son": ks, "etiket": [(ob, os_, kb, ks)]})
+
+    degisti = True
+    while degisti:
+        degisti = False
+        for i in range(len(gruplar)):
+            for j in range(i + 1, len(gruplar)):
+                a, b = gruplar[i], gruplar[j]
+                zaman = a["bas"] < b["son"] and a["son"] > b["bas"]
+                kanal = (a["kanal_bas"] <= b["kanal_son"] + kanal_bosluk
+                         and a["kanal_son"] >= b["kanal_bas"] - kanal_bosluk)
+                if zaman and kanal:
+                    a["bas"] = min(a["bas"], b["bas"])
+                    a["son"] = max(a["son"], b["son"])
+                    a["kanal_bas"] = min(a["kanal_bas"], b["kanal_bas"])
+                    a["kanal_son"] = max(a["kanal_son"], b["kanal_son"])
+                    a["etiket"] += b["etiket"]
+                    gruplar.pop(j)
+                    degisti = True
+                    break
+            if degisti:
+                break
+    return gruplar
 
 
 def olcutler(s):
@@ -110,36 +146,43 @@ def topla(ham_dizin, kopya_dizin, adim, sarmal, cihaz, dosya_filtre=None,
         kutular = gt_kutulari(ky)
         if not kutular:
             continue
-        print(f"  {ad[:44]:46s} {len(kutular)} GT kutusu", flush=True)
+        gruplar = gt_gruplari(kutular)
+        genislik = [g["kanal_son"] - g["kanal_bas"] + 1 for g in gruplar]
+        print(f"  {ad[:44]:46s} {len(kutular):>3} etiket -> "
+              f"{len(gruplar):>2} olay, kanal genisligi {genislik}", flush=True)
 
         tampon, meta = [], []
-        for ob, os_, kb, ks in kutular:
-            for kanal in range(kb, ks + 1):
-                if kanal >= b["n_kanal"]:
-                    continue
-                # kutunun zaman araligini tarayan pencereler
-                ilk = max(0, ob - rd.PENCERE + 1)
-                for bas in range(ilk, min(os_, b["n_ornek"] - rd.PENCERE) + 1,
-                                 adim):
-                    son = bas + rd.PENCERE
-                    if not (bas < os_ and son > ob):
+        for gi, g in enumerate(gruplar):
+            # konum GRUBA gore -- etikete gore degil (etiketler tek kanalli)
+            kmerkez = (g["kanal_bas"] + g["kanal_son"]) / 2
+            kyari = max((g["kanal_son"] - g["kanal_bas"]) / 2, 0.5)
+            for ob, os_, kb, ks in g["etiket"]:
+                tmerkez = (ob + os_) / 2
+                tyari = max((os_ - ob) / 2, 1.0)
+                for kanal in range(kb, ks + 1):
+                    if kanal >= b["n_kanal"]:
                         continue
-                    s = kanal_oku(A, kanal, bas, son)
-                    if len(s) != rd.PENCERE:
-                        continue
-                    o = olcutler(s)
-                    # konum: kanal ve zaman ekseninde kutuya gore [-1, +1]
-                    kmerkez, kyari = (kb + ks) / 2, max((ks - kb) / 2, 0.5)
-                    tmerkez = (ob + os_) / 2
-                    tyari = max((os_ - ob) / 2, 1.0)
-                    o.update(dosya=ad, kanal=kanal, bas=bas,
-                             kanal_konum=(kanal - kmerkez) / kyari,
-                             zaman_konum=((bas + rd.PENCERE / 2) - tmerkez) / tyari)
-                    tampon.append(s.astype(np.float32))
-                    meta.append(o)
-                    if len(tampon) == batch:
-                        _tahmin(tampon, meta, sarmal, cihaz, kayitlar)
-                        tampon, meta = [], []
+                    ilk = max(0, ob - rd.PENCERE + 1)
+                    for bas in range(ilk,
+                                     min(os_, b["n_ornek"] - rd.PENCERE) + 1,
+                                     adim):
+                        son = bas + rd.PENCERE
+                        if not (bas < os_ and son > ob):
+                            continue
+                        s = kanal_oku(A, kanal, bas, son)
+                        if len(s) != rd.PENCERE:
+                            continue
+                        o = olcutler(s)
+                        o.update(
+                            dosya=ad, kanal=kanal, bas=bas, olay=gi,
+                            olay_genisligi=g["kanal_son"] - g["kanal_bas"] + 1,
+                            kanal_konum=(kanal - kmerkez) / kyari,
+                            zaman_konum=((bas + rd.PENCERE / 2) - tmerkez) / tyari)
+                        tampon.append(s.astype(np.float32))
+                        meta.append(o)
+                        if len(tampon) == batch:
+                            _tahmin(tampon, meta, sarmal, cihaz, kayitlar)
+                            tampon, meta = [], []
         if tampon:
             _tahmin(tampon, meta, sarmal, cihaz, kayitlar)
         del A
@@ -215,17 +258,41 @@ def rapor(kayitlar, esik):
                   f"ham kacirma %{100*kc/len(dilim):>5.1f}  "
                   f"duzeltilmis %{100*(kc-bs)/len(dilim):>5.1f}")
 
-    # --- 3) DOSYA BAZINDA ---
-    print("\n  3) DOSYA BAZINDA")
-    print("  " + "-" * 76)
-    print(f"  {'dosya':<40s} {'n':>6s} {'ham kac':>9s} {'duzeltilmis':>12s}")
+    # --- 3) DOSYA BAZINDA + SPEKTRAL KIRILIM ---
+    #
+    # record_26 iki mimaride de digerlerinin 2-3 kati kaciriyor, yani
+    # sebep modelde degil o kayitta. Kacirmanin spektral imzasi
+    # (dusuk_frek yuksek = zayif/sonumlenmis olay) dosya bazinda da
+    # goruluyorsa, record_26'nin olaylari daha zayif demektir.
+    print("\n  3) DOSYA BAZINDA -- kacirma ve GT pencerelerinin spektrumu")
+    print("  " + "-" * 84)
+    print(f"  {'dosya':<34s} {'n':>5s} {'ham':>7s} {'duzelt':>8s} "
+          f"{'dusuk_frek':>11s} {'mad':>8s} {'olay':>5s} {'genislik':>9s}")
     for d in sorted({k["dosya"] for k in kayitlar}):
         g = [k for k in kayitlar if k["dosya"] == d]
         gk = sum(1 for k in g if not k["yakalandi"])
         gb = sum(1 for k in g if not k["yakalandi"] and k["bos_sayilir"])
-        print(f"  {d[:40]:<40s} {len(g):>6} "
-              f"{100*gk/len(g):>8.1f}% "
-              f"{100*(gk-gb)/len(g):>11.1f}%")
+        gen = sorted({k["olay_genisligi"] for k in g})
+        print(f"  {d[:34]:<34s} {len(g):>5} "
+              f"{100*gk/len(g):>6.1f}% {100*(gk-gb)/len(g):>7.1f}% "
+              f"{np.mean([k['dusuk_frek'] for k in g]):>11.3f} "
+              f"{np.mean([k['mad'] for k in g]):>8.1f} "
+              f"{len({k['olay'] for k in g}):>5} "
+              f"{str(gen)[:9]:>9s}")
+    print("\n  dusuk_frek: 100 Hz alti enerji payi. Yuksek = zayif/sonumlenmis")
+    print("  olay: gruplanmis GT olayi sayisi   genislik: kac kanala yayilmis")
+
+    # --- 4) OLAY GENISLIGI ---
+    #
+    # Bir olay kac kanala yayiliyorsa o kadar guclu baglanmis demektir.
+    # Dar olaylar (1-2 kanal) zayif kuplaj isareti olabilir.
+    print("\n  4) OLAY KANAL GENISLIGINE GORE")
+    print("  " + "-" * 76)
+    for gen in sorted({k["olay_genisligi"] for k in kayitlar}):
+        d = [k for k in kayitlar if k["olay_genisligi"] == gen]
+        kc = sum(1 for k in d if not k["yakalandi"])
+        print(f"    {gen:>2} kanal : n={len(d):>5}  kacirma %{100*kc/len(d):>5.1f}"
+              f"   dusuk_frek {np.mean([k['dusuk_frek'] for k in d]):.3f}")
 
 
 if __name__ == "__main__":
