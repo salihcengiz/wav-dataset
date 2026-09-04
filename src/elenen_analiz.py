@@ -195,12 +195,21 @@ def rapor(kayitlar, olaylar):
     print(f"    benchmark'ta KACIRILAN    {REF_KACAN:.3f}   <- referans")
     print(f"    egitimde ELENEN           {df_elenen:.3f}")
     print(f"    benchmark ARTEFAKT        {REF_ARTEFAKT:.3f}   <- referans")
-    yakin = min([("yakalanan", REF_YAKALANAN), ("kacirilan", REF_KACAN),
-                 ("artefakt", REF_ARTEFAKT)],
-                key=lambda t: abs(t[1] - df_elenen))
-    print(f"\n  -> Eledigimiz pencereler en cok '{yakin[0]}' grubuna benziyor.")
-    if yakin[0] == "kacirilan":
+    # "En yakin referans" tek basina YANILTICI: 0.100 gibi bir deger uc
+    # referansin da cok uzaginda oldugu halde birine "en yakin" cikar.
+    # Uzakligi da basmak zorundayiz.
+    ad, ref = min([("yakalanan", REF_YAKALANAN), ("kacirilan", REF_KACAN),
+                   ("artefakt", REF_ARTEFAKT)],
+                  key=lambda t: abs(t[1] - df_elenen))
+    d = abs(ref - df_elenen)
+    print(f"\n  -> En yakin referans: '{ad}' ({ref:.3f}), uzaklik {d:.3f}")
+    if d > 0.15:
+        print("     ANCAK UZAKLIK BUYUK -- eledigimiz pencereler bu")
+        print("     referanslarin HICBIRINE benzemiyor, ayri bir populasyon.")
+    elif ad == "kacirilan":
         print("     ZINCIR KAPANDI: sildigimiz populasyonun uzerine dusuyoruz.")
+    else:
+        print(f"     Eledigimiz pencereler '{ad}' grubuna benziyor.")
 
     # --- 3) KANAL KONUMU: elenenler kenarda mi? ---
     print("\n  3) ELENENLER OLAYIN NERESINDE?")

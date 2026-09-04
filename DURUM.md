@@ -437,7 +437,8 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | **A2** | **BiLSTM'i ONNX'e çevir ve teslim et** | Karar: koşu 4 + bastırma ile devam. Kaçırmada SK'den 9.6 puan iyi |
 | **C** | Sorumluya eşik önerisi | BiLSTM+bastırma ile eğri yeniden çizilmeli; 0.90 iyi bir nokta görünüyor (%31.2 / %1.4) |
 | **F** | **KAÇIRMA — %30.7 (düzeltilmiş %25.5)** | ✅ Analiz edildi (Bölüm 8g). Kaçırma olayın **kanal kenarlarında 3 kat** yoğun; kaçırılan pencereler düşük frekans baskın. Eğitimde `bos_mu` ile elenen %23'ün profiliyle örtüşüyor |
-| **F2** | **Elenen pencerelerin kaçı etiketli olayın içinde?** | Tek sayı, fırsatın boyutunu verir. %10+ ise zayıf pencereleri geri koyup yeniden eğitmek doğrudan kaçırmayı azaltmalı |
+| ~~F2~~ | ❌ ~~Zayıf pencereleri eğitime geri koy~~ | **ÇÜRÜTÜLDÜ.** Elenen pencereler zayıf olay değil, saf gürültü (`mad` 0.45 vs 27.26, `dusuk_frek` 0.100 vs kaçırılanların 0.802). Filtre doğru çalışmış |
+| **F4** | ⚠️ **Eğitim etiketleri 224 kanala kadar yayılıyor** | Benchmark GT'sinde olaylar 3–7 kanal. Bazı etiket gruplarında pencerelerin %92–100'ü boş. Etiket kalitesi ayrı bir soru |
 | **F3** | **record_26 ayrı incelenmeli** | %58.9 kaçırma — ne `dusuk_frek` ne olay genişliği açıklıyor. 4 kanallı olayı bile %66.7 kaçırıyor (geneli %34.9). O kayda özgü bilinmeyen bir etken |
 | **G** | **Koşu 7: BiLSTM + GRİ** | Değeri arttı. Bastırma viridis'i tam kurtarmıyor (BiLSTM y.alarm %1.4, SK %0.5). Gri BiLSTM ikisinin en iyisini verebilir |
 | **D** | **Koşu 7: BiLSTM + GRİ** | Hiç denenmedi. Koşu 4 viridis'ti. BiLSTM'in +0.065 kazancı mimariden geliyorsa, gri BiLSTM hem yüksek doğruluk hem boşluk sağlamlığı verir. **En değerli sıradaki koşu** |

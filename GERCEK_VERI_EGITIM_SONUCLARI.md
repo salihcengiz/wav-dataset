@@ -871,11 +871,62 @@ kaçırılan gerçek olaylar 0.802, yakalanan olaylar 0.587. Eşiği düşürüp
 daha çok artefakt yakalamak, zayıf gerçek olayları da susturur.
 **Yanlış alarm ile kaçırma aynı fiziksel büyüklüğün iki ucu.**
 
-### Sıradaki ölçüm
+### ❌ EĞİTİM FİLTRESİ HİPOTEZİ ÇÜRÜTÜLDÜ (`src/elenen_analiz.py`)
 
-Eğitim setinde **elenen pencerelerin kaçı etiketli olayların içinde?**
-Yüksekse (%10+) modele gerçek olayların zayıf kısmı hiç gösterilmemiş
-demektir ve geri koymak doğrudan kaçırmayı azaltmalı.
+400 olay, 2.306 pencere, eğitim CSV'sinden. Elenen oranı **%27.8**
+(climbing %33.2, cutting %25.4, noise %1.9 — Faz 0'daki ~%25 ile uyumlu).
+
+**Elediğimiz pencereler zayıf olay değil, gerçekten boş:**
+
+| | KALAN | ELENEN |
+|---|---|---|
+| `mad` | 27.26 | **0.448** (60 kat küçük) |
+| `bosluk` | 0.124 | **0.500** (tam beyaz gürültü) |
+| `dusuk_frek` | 0.656 | **0.100** |
+
+Asıl karşılaştırma:
+
+```
+egitimde ELENEN           0.100
+benchmark'ta KACIRILAN    0.802   <- aradigimiz populasyon
+```
+
+**Ölçeğin zıt uçlarında.** Elediğimiz pencerelerin sahada kaçırdığımız
+pencerelerle ilgisi yok. `bos_mu` filtresi doğru çalışmış.
+
+Konum analizi de desteklemiyor: eleme kenarlarda yoğunlaşmıyor
+(kenar %18.2/%39.8, merkez %21.1/%51.3) — benchmark'taki temiz U eğrisi
+burada yok.
+
+→ **Zayıf pencereleri eğitime geri koymak işe yaramaz.** Onlar saf
+gürültü; modele çöp göstermek olur. Bu negatif sonuç bir önbellek
+yeniden kurulumu (~18 dk) ve bir eğitim koşusu (~100 dk) kazandırdı.
+
+⚠️ **Rapor mantığında bir kusur yakalandı:** script "en yakın referans"ı
+basıyordu ve 0.100 için "yakalanan (0.587)" diyordu — oysa uzaklık 0.487.
+Artık uzaklığı da basıp 0.15'ten büyükse *"hiçbirine benzemiyor"* diyor.
+**En yakın komşuyu uzaklık vermeden raporlamak yanıltıcıdır.**
+
+### 🔍 Beklenmedik bulgu: eğitim etiketleri çok geniş kanal aralıkları kapsıyor
+
+| etiket genişliği | eleme | `dusuk_frek` |
+|---|---|---|
+| 1–9 kanal | %0.0 | ~0.63 |
+| 15–23 kanal | **%57–100** | 0.10–0.38 |
+| 85–91 kanal | %0.0 | ~0.64 |
+| 208–224 kanal | %39–55 | 0.34–0.47 |
+
+**Eğitim verisinde bir olay etiketi 224 kanala kadar yayılabiliyor**;
+benchmark GT'sinde olaylar 3–7 kanal. `bos_mu` docstring'i bunu
+söylüyordu: *"labels tablosu kanal ARALIĞI veriyor."*
+
+224 kanallık bir `climbing` etiketi, o kanalların çoğunda hiçbir şey
+olmadığı anlamına geliyor — filtre orada %40–55 eliyor, doğru davranıyor.
+
+⚠️ Ama 15–23 kanallık gruplarda eleme **%92–100**: bazı etiketlerin
+neredeyse tamamı boş. Ölü/kuplajsız fiber bölümleri ya da hatalı
+etiketler olabilir. **Eğitim etiketlerinin kalitesi ayrı bir soru** —
+kaçırma sorununu çözmüyor ama kayda geçmeli.
 
 ---
 
