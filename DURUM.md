@@ -64,14 +64,22 @@ zaten yazmıştı.
 **✅ ÇÖZÜLDÜ (2026-09-02).** Ölçülen sonuç, 7 dosya × 201 kanal ×
 8.040 pencere:
 
+**Teslim edilen model: `sk_gri_kosu3_v2.onnx`** — koşu 3 (SK · gri),
+iki ölçütlü boşluk bastırması, opset 13, IR 7.
+MLflow: `2026-09-02-MODEL-SK_GRI_V2_PERİMETER`
+
 | yapılandırma | kaçırma | yanlış alarm |
 |---|---|---|
-| eski model, eşik 0.90 | %39.7 | %3.2 |
+| eski model, eşik 0.90 | %39.3 | %3.2 |
 | **yeni model, eşik 0.75** | **%35.7** | **%0.8** |
+| yeni model, eşik 0.90 | %40.8 | %0.5 |
 
 Her iki eksende de daha iyi. Waterfall'da sürekli yanlış alarm veren
 kanallar tamamen temizlendi, gerçek olay tespit edilmeye devam ediyor.
-Teslim: `sk_gri_kosu3_v2.onnx`, MLflow `2026-09-02-MODEL-SK_GRI_V2_PERİMETER`.
+
+⚠️ BiLSTM (koşu 4) kaçırmada daha iyiydi (%31.2) ama yanlış alarmı
+3 katı (%1.4). GT-dışı popülasyon 28 kat büyük olduğu için bu, her ek
+tespit başına **2.7 ek yanlış alarm** demek — bu yüzden SK seçildi.
 
 Çözüm **yeniden eğitim gerektirmedi** — ONNX grafiğine iki aritmetik
 düzeltme. Ayrıntı: `GERCEK_VERI_EGITIM_SONUCLARI.md` Bölüm 8.
@@ -434,8 +442,8 @@ STFT elle yazılmış, medyan sıralama tabanlı, havuzlama sabit çekirdekli.
 | ~~B~~ | ✅ ~~`bosluk_orani` filtresi uygulanıyor mu~~ | Gerekmiyor — filtre grafiğe gömüldü |
 | ~~D~~ | ✅ ~~`record_52`'de tekrarla~~ | Yapıldı — 7 dosyanın hepsinde dosya bazında döküm çıkarıldı |
 | ~~E~~ | ✅ ~~BiLSTM'e de uygula~~ | Yapıldı. Bastırmasız %55.5 → bastırmalı %1.4 yanlış alarm |
-| **A2** | **BiLSTM'i ONNX'e çevir ve teslim et** | Karar: koşu 4 + bastırma ile devam. Kaçırmada SK'den 9.6 puan iyi |
-| **C** | Sorumluya eşik önerisi | BiLSTM+bastırma ile eğri yeniden çizilmeli; 0.90 iyi bir nokta görünüyor (%31.2 / %1.4) |
+| ~~A2~~ | ❌ ~~BiLSTM ile devam~~ | **Reddedildi.** Puanlar taban oranı olmadan karşılaştırılmıştı: GT-dışı popülasyon 28 kat büyük, ek her tespit için **2.7 ek yanlış alarm** çıkıyor. Teslim: **`sk_gri_kosu3_v2.onnx`** |
+| **C** | Sorumluya eşik önerisi | SK gri v2 için: 0.90 → %40.8 kaçırma / %0.5 y.alarm · **0.75 → %35.7 / %0.8** (önerilen) · 0.50 → %27.2 / %2.0 |
 | **F** | **KAÇIRMA — %30.7 (düzeltilmiş %25.5)** | ✅ Analiz edildi (Bölüm 8g). Kaçırma olayın **kanal kenarlarında 3 kat** yoğun; kaçırılan pencereler düşük frekans baskın. Eğitimde `bos_mu` ile elenen %23'ün profiliyle örtüşüyor |
 | ~~F2~~ | ❌ ~~Zayıf pencereleri eğitime geri koy~~ | **ÇÜRÜTÜLDÜ.** Elenen pencereler zayıf olay değil, saf gürültü (`mad` 0.45 vs 27.26, `dusuk_frek` 0.100 vs kaçırılanların 0.802). Filtre doğru çalışmış |
 | **F4** | ⚠️ **Eğitim etiketleri 224 kanala kadar yayılıyor** | Benchmark GT'sinde olaylar 3–7 kanal. Bazı etiket gruplarında pencerelerin %92–100'ü boş. Etiket kalitesi ayrı bir soru |

@@ -512,7 +512,31 @@ alarm. Çevre güvenliğinde kaçırma daha pahalı olduğu için takas lehte.
 | record_52 | %45.0 | **%37.5** |
 | record_26 | %73.7 | %73.7 |
 
-**🔒 KARAR: kosu4 + bastırma ile devam.**
+### 🔒 KARAR: **koşu 3 (SK · gri) + bastırma** ile devam
+
+İlk okuma "BiLSTM 9.6 puan az kaçırıyor, 0.9 puan fazla yanlış alarm
+veriyor, takas lehte" demişti. **Bu karşılaştırma yanlıştı** — puanlar
+taban oranı hesaba katılmadan yan yana konmuştu.
+
+Ölçümde **272 GT-içi** pencereye karşılık **7.768 GT-dışı** pencere var
+(1:28.5). Her 100 olay penceresi başına ~2.856 olay-dışı pencere düşüyor:
+
+| model (eşik 0.90) | 100 olayda tespit | yanlış alarm sayısı |
+|---|---|---|
+| koşu 3 + bas | 59.2 | **14.3** |
+| koşu 4 + bas | 68.8 | **40.0** |
+| fark | **+9.6** | **+25.7** |
+
+**Her ek tespit için 2.7 ek yanlış alarm.** Yüzde olarak 0.9 puan küçük
+görünüyordu ama uygulandığı popülasyon 28 kat büyük — operatörün gördüğü
+sayı bu.
+
+→ **Teslim edilen ve önerilen model: `sk_gri_kosu3_v2.onnx`**
+(koşu 3, gri, iki ölçütlü bastırma, opset 13, IR 7).
+
+⚠️ Çekince: olaylar birden fazla pencereye yayılıyor, yani pencere
+düzeyinde kaçırma olay düzeyinde kaçırma demek değil. Arayüzde
+`Non-Maximum Suppression` da var. Ama yön bu.
 
 ⚠️ **İki açık nokta:**
 
@@ -787,7 +811,26 @@ opset **13**, IR **7**, çıktılar `logit` + `bosluk_orani`.
 
 ## 8g. KAÇIRMA ANALİZİ (2026-09-04, `src/kacirma_analiz.py`)
 
-Kosu 4 + bastırma, eşik 0.90, 534 GT-içi pencere, 7 `.bin` dosyası.
+⚠️ **MODEL ATFI — dikkat.** Bu bölümdeki ölçümler **koşu 4 (BiLSTM)** +
+bastırma ile yapıldı, teslim edilen **koşu 3 (SK gri)** ile değil.
+Script'in varsayılan checkpoint'i koşu 4'tü ve karar sonradan koşu 3
+lehine değişti.
+
+**Teslim edilen modelin kaçırması aynı ölçümde %40.8** (eşik 0.90) ya da
+**%35.7** (eşik 0.75) — aşağıdaki %30.7 BiLSTM'in.
+
+Kaçırmanın **yapısı** (kenar etkisi, spektral imza, olay genişliği) bir
+veri/fizik özelliği ve mimariden bağımsız olmalı — ama **bu varsayım
+ölçülmedi.** Koşu 3 ile tekrarlanması gereken bir iş:
+
+```
+python3 src/kacirma_analiz.py --cihaz cpu \
+  --ckpt .../egitim_ciktilari/kosu3_gri_sifirdan.pt
+```
+
+---
+
+Koşu 4 + bastırma, eşik 0.90, 534 GT-içi pencere, 7 `.bin` dosyası.
 Ham kaçırma **%30.7**.
 
 ### Hipotez büyük ölçüde ÇÜRÜTÜLDÜ: kaçırmalar gerçek

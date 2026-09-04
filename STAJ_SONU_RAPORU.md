@@ -172,13 +172,32 @@ hiçbir değişiklik gerekmiyor.
 | model | eşik | kaçırma | yanlış alarm |
 |---|---|---|---|
 | SK gri, bastırmasız | 0.90 | %39.3 | %3.2 |
-| **SK gri, bastırmalı** | 0.90 | %40.8 | **%0.5** |
+| **SK gri, bastırmalı** ⭐ | 0.90 | %40.8 | **%0.5** |
 | BiLSTM, bastırmasız | 0.90 | %29.8 | **%55.5** |
-| **BiLSTM, bastırmalı** | 0.90 | **%31.2** | %1.4 |
+| BiLSTM, bastırmalı | 0.90 | %31.2 | %1.4 |
 
 Bastırmasız BiLSTM sahada felaket (%55.5); bastırma onu **40 kat**
 toparlıyor. Waterfall'da sürekli yanlış alarm veren kanalların hepsi
 temizlendi, gerçek olay tespit edilmeye devam ediyor.
+
+### 🔒 Teslim edilen model: `sk_gri_kosu3_v2.onnx`
+
+BiLSTM kaçırmada 9.6 puan daha iyi ama yanlış alarmı 3 katı. İlk bakışta
+takas lehte görünüyor — **ancak puanlar taban oranı hesaba katılmadan
+karşılaştırılamaz.** Ölçümde 272 GT-içi pencereye karşılık **7.768
+GT-dışı** pencere var (1:28.5):
+
+| model (eşik 0.90) | 100 olayda tespit | yanlış alarm sayısı |
+|---|---|---|
+| **SK gri + bastırma** | 59.2 | **14.3** |
+| BiLSTM + bastırma | 68.8 | 40.0 |
+
+**Her ek tespit için 2.7 ek yanlış alarm.** Operatörün gördüğü sayı bu.
+Bu yüzden teslim **SK · gri · bastırmalı** modeli oldu.
+
+**Önerilen çalışma noktası: eşik 0.75** — %35.7 kaçırma, %0.8 yanlış
+alarm. 0.90'ın üstü saf kayıp: yanlış alarm zaten dipte, sadece kaçırma
+artıyor.
 
 ---
 
@@ -198,7 +217,7 @@ temizlendi, gerçek olay tespit edilmeye devam ediyor.
 
 | # | konu | durum |
 |---|---|---|
-| 1 | **Kaçırma %25–31** | Asıl kalan sorun. İki hipotez denendi, ikisi de çürütüldü |
+| 1 | **Kaçırma %35.7** (teslim modeli, eşik 0.75) | Asıl kalan sorun. İki hipotez denendi, ikisi de çürütüldü |
 | 2 | **Koşu 7: BiLSTM + gri** | Kod hazır, GPU 6 saat boyunca başkası tarafından dolu tutulduğu için hiç başlayamadı |
 | 3 | **`.sdf` örnekleme hızı** | 10 dosyada `duration × prf` ile örnek sayısı tam 2 kat uyuşmuyor (gerçek fs 4000 gibi). Sorumluya teyit ettirilmeli |
 | 4 | **record_26 anomalisi** | %58.9 kaçırma, hiçbir açıklamaya uymuyor |
@@ -209,7 +228,14 @@ temizlendi, gerçek olay tespit edilmeye devam ediyor.
 
 ## 5. KAÇIRMA HAKKINDA NE BİLİYORUZ
 
-Bu, projenin devredilen ana problemi. Ölçülenler:
+Projenin devredilen ana problemi. Teslim modelinde (SK gri v2)
+**%35.7** (eşik 0.75) / **%40.8** (eşik 0.90).
+
+⚠️ **Aşağıdaki yapısal analizler koşu 4 (BiLSTM) ile yapıldı**, teslim
+modeliyle değil — script'in varsayılan checkpoint'i oydu ve karar
+sonradan SK lehine değişti. Kaçırmanın *yapısı* bir veri/fizik özelliği
+olduğu için mimariden bağımsız olmalı, **ama bu varsayım ölçülmedi.**
+Koşu 3 ile tekrarlanması, devralanın ilk işlerinden biri olmalı.
 
 **Doğrulanmış gözlemler**
 
@@ -249,10 +275,14 @@ susturur. **Yanlış alarm ile kaçırma aynı fiziksel büyüklüğün iki ucu.
 
 ### A. Kısa vade (kod hazır, yalnızca koşturulacak)
 
-1. **Koşu 7: BiLSTM + gri.** Hiç denenmedi. BiLSTM'in kaçırma
-   üstünlüğünü (%31.2 vs %40.8) gri temsilin boşluk sağlamlığıyla
-   birleştirmesi bekleniyor — bastırma viridis'in zararını tam
-   almıyor (BiLSTM y.alarm %1.4, SK %0.5). ~100 dk, GPU gerekir.
+1. **Koşu 7: BiLSTM + gri.** Hiç denenmedi — **en yüksek getirili koşu.**
+   BiLSTM viridis olduğu için elendi: kaçırmada 9.6 puan iyi ama yanlış
+   alarmı SK'nin 3 katı ve bastırma viridis'in zararını tam almıyor.
+   **Gri bir BiLSTM ikisini birleştirebilir** — BiLSTM'in tespit
+   üstünlüğü + gri'nin boşluk sağlamlığı. Kod hazır, ~100 dk, GPU gerekir.
+2. **Kaçırma analizini teslim modeliyle tekrarla.** Yapısal bulgular
+   (kenar etkisi, spektral imza) koşu 4 ile ölçüldü; koşu 3 ile
+   doğrulanmalı. CPU'da birkaç dakika, tek komut.
 2. **Çalışma noktası seçimi.** Eşik eğrisi çıkarıldı; 0.90 üstü **saf
    kayıp** (yanlış alarm zaten dipte, sadece kaçırma artıyor). Sorumluyla
    birlikte 0.75 civarına inmek ölçüme göre iki eksende de daha iyi.
