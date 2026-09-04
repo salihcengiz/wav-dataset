@@ -3,7 +3,8 @@
 > Bu dosya, projeye yeni katılan biri (veya yeni bir sohbet) için giriş
 > noktasıdır. Önce bunu oku, sonra aşağıdaki sıraya göre diğer dosyaları.
 
-**Son güncelleme:** 2026-09-02
+**Son güncelleme:** 2026-09-04 — *staj bitti, proje devrediliyor. Devir
+özeti: `STAJ_SONU_RAPORU.md` ve `report/staj_sonu_raporu.pdf`*
 
 ---
 
@@ -68,6 +69,44 @@ zaten yazmıştı.
 iki ölçütlü boşluk bastırması, opset 13, IR 7.
 MLflow: `2026-09-02-MODEL-SK_GRI_V2_PERİMETER`
 
+### 📦 Üretilen ONNX dosyaları — hangisi ne
+
+Hepsi `egitim_ciktilari/paket/` altında. **Aralarındaki farkı bilmek şart**,
+çünkü aynı ağırlıkları taşıyan üç SK dosyası var:
+
+| dosya | ağırlık | bastırma | durum |
+|---|---|---|---|
+| `sk_gri_kosu3.onnx` | koşu 3 | **yok** | ilk gri teslim, opset 13 |
+| `sk_gri_kosu3_bastirmali.onnx` | koşu 3 | **v1** — yalnız `bosluk_orani` | ⚠️ **iki kusur hâlâ içinde**: sıfır güç koruması yok, ölçüt ölü kanalda ters. Sahada tetiklenmedi |
+| **`sk_gri_kosu3_v2.onnx`** | koşu 3 | **v2** — `bosluk_orani` VEYA `dusuk_frek` | ✅ **TESLİM EDİLEN** |
+| `bilstm_kosu4.onnx` | koşu 4 | yok | ilk teslim (viridis) |
+| `bilstm_kosu4_v2.onnx` | koşu 4 | v2 | üretildi, teslim edilmedi — model kararı SK lehine döndü |
+| `bilstm_kosu4_opset17_yedek.onnx` | koşu 4 | yok | opset 13'e geçmeden önceki yedek |
+
+⚠️ `sk_gri_kosu3_bastirmali.onnx` **kullanılmamalı** — bastırması var ama
+çalışmıyor, yani en yanıltıcı dosya. Sahada denendi, kanal 0 hâlâ
+`cutting` verdi; iki kusur ondan sonra bulundu.
+
+### MLflow'a yüklenenler
+
+| run adı | dosya |
+|---|---|
+| `2026-08-31-MODEL-BİLSTM_PERİMETER` | `bilstm_kosu4.onnx` (sorumlu yükledi) |
+| `2026-09-01-MODEL-SK_GRI_PERİMETER` | `sk_gri_kosu3.onnx` |
+| `2026-09-01-MODEL-SK_GRI_BASTIRMALI_PERİMETER` | `sk_gri_kosu3_bastirmali.onnx` |
+| **`2026-09-02-MODEL-SK_GRI_V2_PERİMETER`** | **`sk_gri_kosu3_v2.onnx`** ✅ |
+| `2026-09-02-MODEL-BILSTM_V2_PERİMETER` | `bilstm_kosu4_v2.onnx` |
+
+Deney: `Salih-Perimeter-Inosens` (id 89) · http://192.168.100.9:5000
+
+### Rapor çıktıları
+
+- `STAJ_SONU_RAPORU.md` — depo içi özet
+- `report/staj_sonu_raporu.tex` → `report/staj_sonu_raporu.pdf` (6 sayfa,
+  `pdflatex` ile iki kez derlenir)
+- Yayımlanan sayfa:
+  https://claude.ai/code/artifact/669010c8-8a92-4aa8-b213-84e50d50aa4d
+
 | yapılandırma | kaçırma | yanlış alarm |
 |---|---|---|
 | eski model, eşik 0.90 | %39.3 | %3.2 |
@@ -120,7 +159,8 @@ Sıradaki işler Bölüm 5'in sonunda ve
 
 | # | Dosya | Ne için |
 |---|---|---|
-| **1** | **`GERCEK_VERI_EGITIM_SONUCLARI.md`** | **EN GÜNCEL.** Beş koşu, atıf hesabı, çürütülen teşhisler, ONNX (opset 13 + boşluk bastırması), saha testi bulguları (8c–8f), açık işler |
+| **0** | **`STAJ_SONU_RAPORU.md`** | **DEVİR ÖZETİ.** Ne yapıldı, nereye gelindi, ne eksik, yol haritası. PDF: `report/staj_sonu_raporu.pdf` |
+| **1** | **`GERCEK_VERI_EGITIM_SONUCLARI.md`** | **EN AYRINTILI.** Beş koşu, atıf hesabı, çürütülen teşhisler, ONNX (opset 13 + boşluk bastırması), saha testi bulguları (8c–8h), açık işler |
 | 2 | `GERCEK_VERI_FAZ0_RAPORU.md` | Gerçek veri denetimi, kararlar (1.5), ayrılabilirlik (5.4), ortam/hız ölçümleri (8.5), önbellek (8.6) |
 | 3 | `src/real_data.py` | Ön işleme hattı. Docstring'ler gerekçeleri açıklıyor |
 | 4 | `CNN-BiLSTM/model_bilstm.py` | Kazanan mimari. Docstring'de tasarım gerekçeleri |
@@ -157,7 +197,10 @@ alındı" sorusunun cevabı.
 | `src/ham_esles.py` | Benchmark `.hdf5` kopyalarının ham karşılıklarını bulur | bir kerelik, bitti |
 | `src/kanal_avi.py` | `/tf` altında çok kanallı dosya arar | bir kerelik, bitti |
 | `src/ortam_kontrol.py` | **Ortam sağlık kontrolü.** Paket sürümleri, `/dev/shm`, CUDA, `torch.from_numpy`. Her `pip install`ten sonra koştur | aktif |
-| `src/bos_pencere_testi.py` | Boş pencerelerde model ne diyor — boşluk/olay ayrımını ölçer | aktif |
+| `src/bos_pencere_testi.py` | Boş pencerelerde model ne diyor — boşluk/olay ayrımını ölçer. `--bos-esik` ile eşik ezilebilir | aktif |
+| `src/bosluk_olcut_tarama.py` | Hangi büyüklük olay/olay-dışını ayırır — altı aday ölçütü etiketli benchmark verisinde tarar | aktif |
+| `src/kacirma_analiz.py` | **Kaçırma analizi.** GT-içi pencerelerin ne kadarı gerçekten boş, kaçırmalar olayın neresinde, dosya bazında kırılım. GT etiketlerini fiziksel olaylara gruplar (`gt_gruplari`) | aktif |
+| `src/elenen_analiz.py` | Eğitimde `bos_mu` ile elenen pencereler ne? Spektral imzalarını benchmark referanslarıyla karşılaştırır. Rastgele **satır** değil rastgele **olay** örnekler | aktif |
 | `src/sunucu_kontrol.py` | Sunucu ortam + hız ölçümü | bir kerelik, bitti |
 | `src/inspect_csv_index.py` | Faz 0: CSV indeksini çöz | bir kerelik, bitti |
 | `src/inspect_hdf5.py` | Faz 0: HDF5 yapısını incele | bir kerelik, bitti |
@@ -517,6 +560,48 @@ cevabı dosyaya bakılarak ölçülebilir bir olgudur.
 yana yaz. `gercek_export.py`'nin ürettiği model kartı artık tam da bunu
 yapıyor (en üstteki "Hangi dosyayı kullanmalısınız" tablosu).
 
+### İki yüzdeyi taban oranı olmadan karşılaştırmak
+
+Dört model karşılaştırmasında BiLSTM ile SK yan yana kondu:
+
+```
+kacirma  %31.2 vs %40.8   ->  BiLSTM 9.6 puan iyi
+y.alarm   %1.4 vs  %0.5   ->  BiLSTM 0.9 puan kotu
+```
+
+"9.6'ya karşı 0.9, takas açıkça lehte" denip **BiLSTM'e dönme kararı
+yazıldı.** Yanlıştı.
+
+İki oran **28 kat farklı büyüklükteki popülasyonlara** uygulanıyor:
+ölçümde 272 GT-içi pencereye karşılık 7.768 GT-dışı pencere var. Her 100
+olay penceresi başına ~2.856 olay-dışı pencere düşüyor:
+
+```
+SK + bastirma      59.2 tespit   14.3 yanlis alarm
+BiLSTM + bastirma  68.8 tespit   40.0 yanlis alarm
+                   -> her ek tespit icin 2.7 EK YANLIS ALARM
+```
+
+Operatörün gördüğü sayı bu. Karar tersine döndü ve teslim SK oldu.
+
+→ **Ders:** iki oranı yan yana koyup takas yapmadan önce **hangi
+popülasyonlara uygulandıklarına** bak. Ölçüm doğruydu; yorum yanlıştı ve
+neredeyse yanlış modeli teslim ettiriyordu.
+
+### En yakın komşuyu uzaklık vermeden raporlamak
+
+`elenen_analiz.py` elenen pencerelerin spektral imzasını üç referansla
+karşılaştırıyor ve "en yakın olan" diye birini basıyordu. Elenen değer
+**0.100** çıktı ve script *"en çok 'yakalanan' (0.587) grubuna benziyor"*
+dedi — oysa uzaklık **0.487**, yani üç referansın da çok uzağında.
+
+Bir an için "eledigimiz veri yakalananlara benziyor" gibi yanlış bir
+sonuca götürdü.
+
+→ En yakın komşu **uzaklığıyla birlikte** raporlanmalı. Script
+düzeltildi: uzaklık 0.15'i aşarsa *"hiçbirine benzemiyor, ayrı bir
+popülasyon"* diyor.
+
 ### Yanlış popülasyonda ölçüp "işe yaramıyor" demek
 
 `dusuk_frek` ölçütü, benchmark `.hdf5` kopyalarında sınandı ve **işe
@@ -634,6 +719,32 @@ Kernel gerekir. `!python3` altsüreç olduğu için hemen görür; bu yüzden
 
 → Uzun koşuları **bekleyen başlatıcıyla** çalıştırın (Bölüm 8C'de örnek).
 Sorumluya iletildi, "yapacak bir şey yok" dendi.
+
+⚠️ **2026-09-04: 6 saat boyunca tam doluluk, kullanım %0.** Koşu 7 hiç
+başlayamadı ve iptal edildi.
+
+```
+Memory-Usage : 24079MiB / 24576MiB
+GPU-Util     : 0%          <- kimse hesap yapmiyor
+Power / Perf : 45W / 350W, P8   <- kart bosta
+Processes    : (bos)        <- baska konteyner, goremiyoruz
+```
+
+Bu **normal çekişme değil, terk edilmiş bir ayırma.** Bellek rezerve
+edilmiş ama kart çalışmıyor. Kendi konteynerimizdeki süreçler kontrol
+edildi (`ps aux`), aday yok — 73 MB ve 19 MB'lık iki boşta kernel.
+
+**Muhtemel sebep (doğrulanmadı):** boşta duran bir TensorFlow oturumu.
+TF, `allow_growth` açık değilse ilk kullanımda kartın **tamamını**
+ayırıyor ve bu sunucu bir TF imajı. `GPU-Util %0` + `P8` bununla uyumlu.
+Test arayüzü de `CUDA ACTIVE` / `MODEL LOADED` gösteriyordu — o da bir
+aday.
+
+→ Kalıcı çözüm TF kullanan tarafta:
+`tf.config.experimental.set_memory_growth(gpu, True)`
+
+⚠️ `fuser` bu imajda **kurulu değil**; GPU aygıtını kimin açtığını
+`fuser -v /dev/nvidia*` ile bakamazsın, `ps aux` ile dolaylı bakılır.
 
 ### `/dev/shm` 64 MB — DataLoader işçileri çöküyor
 
@@ -950,6 +1061,7 @@ olarak olay değil, artefakttır.
 | `Folder` | `Fence Benchmark Data` — `Buried Benchmark Data` **başka bir proje** (gömülü kablo, kazı/araç olayları). Bizim model orada anlamsız |
 | `Downsample` | Varsayılan 8. Modele giden sinyali de etkiliyorsa 250 Hz'e düşer ve sonuç çöp olur — **1'e çek** |
 | `Stride` | 4000 (%73 örtüşme) |
+| `Non-Maximum Suppression` | **KAPALI** — ham çıkarım pencereleri gösteriliyor, birleştirme yok |
 | `MLflow Model Path` | `mlflow-artifacts:/89/<run_id>/artifacts/Onnx Model` |
 
 ⚠️ **Arayüz `/tf/segment/Fence Benchmark Data/` altındaki `.hdf5`

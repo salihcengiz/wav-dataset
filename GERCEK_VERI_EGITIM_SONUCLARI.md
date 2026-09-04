@@ -480,7 +480,10 @@ yapıldı ve düzeltildi.
 ⚠️ record_26, waterfall'da "weak climbing" kutusunun boş çıktığı dosya.
 %72.7 kaçırma bununla tutarlı.
 
-### 🔑 DÖRT MODEL YAN YANA — BiLSTM'e dönülüyor (2026-09-02)
+### 🔑 DÖRT MODEL YAN YANA (2026-09-02)
+
+⚠️ Bu bölümün ilk hâli *"BiLSTM'e dönülüyor"* diyordu. **Karar sonradan
+tersine döndü** — gerekçesi bölümün sonunda (taban oranı hesabı).
 
 Aynı 8.040 pencerede, dört yapılandırma:
 
@@ -970,6 +973,44 @@ olmadığı anlamına geliyor — filtre orada %40–55 eliyor, doğru davranıy
 neredeyse tamamı boş. Ölü/kuplajsız fiber bölümleri ya da hatalı
 etiketler olabilir. **Eğitim etiketlerinin kalitesi ayrı bir soru** —
 kaçırma sorununu çözmüyor ama kayda geçmeli.
+
+---
+
+## 8h. KOŞU 7 — KOD HAZIR, HİÇ KOŞTURULAMADI
+
+**BiLSTM + gri.** Koşu 4 ile **tek farkı renk temsili** — temiz, tek
+değişkenli karşılaştırma.
+
+**Kod değişikliği (yapıldı, push edildi):**
+
+```python
+# src/gercek_egitim.py
+KOSULAR[7] = {"ad": "bilstm_gri", "renk": "gri", "aktarim": False}
+
+# CNN-BiLSTM/egitim_bilstm.py
+KOSU_NO = 7                      # varsayilan artik GRI
+--kosu {4,7}                     # 4 = viridis (eski), 7 = gri
+```
+
+Çıktı dosyaları `kosu7_bilstm_gri.pt` / `..._gecmis.json` olacak; koşu 4'ün
+üstüne yazmaz. Yerelde sahte veriyle duman testi geçti (`girdi temsili: gri`,
+`DASNetBiLSTM`, 430.932 parametre) ve `--kosu 4` ile eski yolun bozulmadığı
+ayrıca doğrulandı.
+
+**Koşturma komutu** (GPU bekleyen başlatıcıyla, DURUM Bölüm 8C):
+
+```
+python3 egitim_bilstm.py --kosu 7 --isci 3
+```
+
+⚠️ **Hiç başlayamadı.** GPU 6 saat boyunca başka bir konteyner tarafından
+dolu tutuldu (24.079 / 24.576 MiB, kullanım **%0**). Bekleyen başlatıcı
+sırada bekledi, sonra kapatıldı. Ayrıntı: DURUM Bölüm 6.
+
+**Neden değerli:** bastırma viridis'in zararını **tam almıyor** — BiLSTM'in
+yanlış alarmı bastırmayla bile %1.4, SK'ninki %0.5. Gri bir BiLSTM,
+mimarinin kaçırma üstünlüğünü (%31.2 vs %40.8) gri temsilin boşluk
+sağlamlığıyla birleştirebilir. **Yol haritasındaki en yüksek getirili iş.**
 
 ---
 
