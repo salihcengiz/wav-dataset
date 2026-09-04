@@ -785,6 +785,100 @@ opset **13**, IR **7**, çıktılar `logit` + `bosluk_orani`.
 
 ---
 
+## 8g. KAÇIRMA ANALİZİ (2026-09-04, `src/kacirma_analiz.py`)
+
+Kosu 4 + bastırma, eşik 0.90, 534 GT-içi pencere, 7 `.bin` dosyası.
+Ham kaçırma **%30.7**.
+
+### Hipotez büyük ölçüde ÇÜRÜTÜLDÜ: kaçırmalar gerçek
+
+"GT bir zaman aralığı işaretliyor, o aralıkta hareketin durduğu anlar
+var, o yüzden kaçırma abartılı görünüyor" denmişti. Ölçüldü:
+
+```
+kacan pencerelerin yalnizca %17.1'i spektral olarak bos
+DUZELTILMIS KACIRMA: %25.5   [ham %30.7]
+```
+
+Beşte biri. **Model gerçekten olayları kaçırıyor.**
+
+### 🔑 Kaçırma olayın KANAL KENARLARINDA yoğunlaşıyor
+
+| kanal konumu | n | ham | düzeltilmiş |
+|---|---|---|---|
+| `[-1.0, -0.5)` **kenar** | 152 | %40.1 | **%37.5** |
+| `[-0.5, 0.0)` | 83 | %21.7 | %18.1 |
+| `[0.0, +0.5)` **merkez** | 154 | %15.6 | **%11.7** |
+| `[+0.5, +1.0)` **kenar** | 145 | %42.1 | **%31.7** |
+
+Temiz U eğrisi, kenar/merkez oranı **~3 kat**. Veri setinin kendi "weak
+climbing" etiketiyle söylediği şeyin sayısı.
+
+Zaman ekseninde kayda değer yapı yok (%10.8 → %19.2). Sorun **nerede**,
+ne zaman değil.
+
+⚠️ **Bu analiz ilk sürümde sessizce anlamsızdı.** `labels` her satırda
+TEK kanal veriyor (`kanal_bas == kanal_son`); waterfall'da çok kanallı
+görünen kutular yan yana çizilmiş ayrı etiketler. "Kutu içinde konum"
+hep 0 çıkıyor ve tüm pencereler tek dilime düşüyordu. Etiketler önce
+fiziksel olaylara **gruplanmalı** (`gt_gruplari`).
+
+### Olay ne kadar genişse o kadar çok kaçırılıyor
+
+```
+3 kanal : n=180  kacirma %15.0   dusuk_frek 0.595
+4 kanal : n=284  kacirma %34.9   dusuk_frek 0.684
+7 kanal : n= 70  kacirma %54.3   dusuk_frek 0.674
+```
+
+Beklentinin **tersi** — dar olayların zayıf kuplaj işareti olacağı
+sanılmıştı. Makul okuma: yakın/güçlü darbe az kanala güçlü bağlanır,
+uzak/yayılı olay çok kanala zayıf yayılır.
+
+### record_26 bunların hiçbiriyle açıklanmıyor
+
+| dosya | kaçırma | `dusuk_frek` |
+|---|---|---|
+| record_26 | %58.9 | 0.668 |
+| record_52 | %37.5 | **0.700** |
+| record_49 | %7.4 | 0.584 |
+
+record_52'nin `dusuk_frek`'i daha yüksek ama kaçırması daha düşük —
+spektral zayıflık dosya farkını açıklamıyor. Genişlik de yetmiyor:
+record_26'nın 4 kanallı olayı hesapla **%66.7** kaçırıyor, oysa
+4 kanallı olayların geneli %34.9.
+
+→ **record_26 her iki olayında da beklenenden kötü. O kayda özgü,
+henüz bilinmeyen bir etken var. Ayrı inceleme gerekiyor.**
+
+### 🔑 Eğitim filtresi hipotezi artık desteklendi
+
+Üç bağımsız ölçüm aynı yeri gösteriyor:
+
+| bulgu | değer |
+|---|---|
+| Kaçırma olayın kanal kenarlarında | **3 kat** |
+| Kaçırılan pencereler düşük frekans baskın | 0.80 vs 0.59 |
+| Eğitimde `bos_mu` ile elenen pencere | **%23** |
+
+Kenar kanal = zayıflamış sinyal = düşük frekans baskın = **tam olarak
+`bos_mu`'nun elediği profil.** Model olayların güçlü çekirdeğiyle
+eğitildi, zayıf çeperi hiç görmedi.
+
+⚠️ **Ve bu bir gerilim yaratıyor:** bastırma ölçütümüz
+(`dusuk_frek > 0.9084`) tam bu eksende çalışıyor. Artefaktlar 0.956,
+kaçırılan gerçek olaylar 0.802, yakalanan olaylar 0.587. Eşiği düşürüp
+daha çok artefakt yakalamak, zayıf gerçek olayları da susturur.
+**Yanlış alarm ile kaçırma aynı fiziksel büyüklüğün iki ucu.**
+
+### Sıradaki ölçüm
+
+Eğitim setinde **elenen pencerelerin kaçı etiketli olayların içinde?**
+Yüksekse (%10+) modele gerçek olayların zayıf kısmı hiç gösterilmemiş
+demektir ve geri koymak doğrudan kaçırmayı azaltmalı.
+
+---
+
 ## 8f. DEĞERLENDİRİLEN AMA UYGULANMAYAN YAKLAŞIMLAR
 
 Yanlış alarm sorunu için tartışılan eğitim tarafı çözümler. **Hiçbiri
